@@ -1,0 +1,2100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Box Monitoring System</title>
+<meta name="theme-color" content="#3454D1" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Box Monitoring" />
+<link id="favicon-link" rel="icon" />
+<link id="apple-icon-link" rel="apple-touch-icon" />
+<link id="manifest-link" rel="manifest" />
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+<script>
+  var boxIconSvg =
+    "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>" +
+    "<rect width='100' height='100' rx='22' fill='#EAF1FB'/>" +
+    "<rect x='20' y='46' width='60' height='34' rx='6' fill='#FFFFFF' stroke='#B9D3EC' stroke-width='2.5'/>" +
+    "<line x1='30' y1='50' x2='30' y2='76' stroke='#B9D3EC' stroke-width='2'/>" +
+    "<line x1='40' y1='50' x2='40' y2='76' stroke='#B9D3EC' stroke-width='2'/>" +
+    "<line x1='60' y1='50' x2='60' y2='76' stroke='#B9D3EC' stroke-width='2'/>" +
+    "<line x1='70' y1='50' x2='70' y2='76' stroke='#B9D3EC' stroke-width='2'/>" +
+    "<rect x='30' y='58' width='22' height='10' rx='2' fill='#1F2430' opacity='0.85'/>" +
+    "<rect x='16' y='32' width='68' height='18' rx='7' fill='#2F6FED'/>" +
+    "<rect x='26' y='38' width='48' height='4' rx='2' fill='#5C8CF2'/>" +
+    "<rect x='9' y='36' width='10' height='10' rx='3' fill='#F5B942'/>" +
+    "<rect x='81' y='36' width='10' height='10' rx='3' fill='#F5B942'/>" +
+    "</svg>";
+  var iconUrl = "data:image/svg+xml," + encodeURIComponent(boxIconSvg);
+  document.getElementById("favicon-link").setAttribute("href", iconUrl);
+  document.getElementById("apple-icon-link").setAttribute("href", iconUrl);
+
+  try {
+    var manifest = {
+      name: "Box Monitoring",
+      short_name: "Box Monitoring",
+      start_url: window.location.href,
+      display: "standalone",
+      background_color: "#F3F5F9",
+      theme_color: "#3454D1",
+      icons: [
+        { src: iconUrl, sizes: "192x192", type: "image/svg+xml", purpose: "any" },
+        { src: iconUrl, sizes: "512x512", type: "image/svg+xml", purpose: "any" }
+      ]
+    };
+    var manifestBlob = new Blob([JSON.stringify(manifest)], { type: "application/json" });
+    document.getElementById("manifest-link").setAttribute("href", URL.createObjectURL(manifestBlob));
+  } catch (e) {}
+</script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+// DETEKSI OTOMATIS: JIKA DIBUKA LOKAL MAKA PAKAI LOCAL STORAGE, JIKA DEPLOY MAKA PAKAI FIREBASE
+const isLocalEnv = typeof window !== "undefined" && (
+  window.location.protocol === "file:" ||
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "127.0.0.1"
+);
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDUeWvf9dqKaxAvM6tUxMWBdKRaKshZBeI",
+  authDomain: "box-monitoring-7ffbf.firebaseapp.com",
+  projectId: "box-monitoring-7ffbf",
+  storageBucket: "box-monitoring-7ffbf.firebasestorage.app",
+  messagingSenderId: "933443141444",
+  appId: "1:933443141444:web:3ad886fd89755c54dca111",
+};
+
+let db = null;
+if (!isLocalEnv) {
+  try {
+    if (!firebase.apps.length) {
+      firebase.initializeApp(firebaseConfig);
+    }
+    db = firebase.firestore();
+  } catch (e) {
+    console.warn("Firebase offline or not reached, falling back to local cache:", e);
+  }
+}
+
+// ADAPTER LOCAL STORAGE SEBAGAI PENYIMPANAN AMAN & BACKUP PERMANEN
+const LocalStore = {
+  get(key, defaultVal) {
+    try {
+      const d = localStorage.getItem("bm_v2_" + key);
+      return d ? JSON.parse(d) : defaultVal;
+    } catch (e) {
+      return defaultVal;
+    }
+  },
+  set(key, val) {
+    try {
+      localStorage.setItem("bm_v2_" + key, JSON.stringify(val));
+    } catch (e) {}
+  }
+};
+
+const LOCATIONS = ["Sundry", "Paper", "Filter", "Cutting", "Remove Filter", "BB1", "BB2", "BB3", "GP3", "Jembrana"];
+const BOX_TYPES = ["CB-10", "CB-45", "CB-95", "JM-10", "JM-45", "JM-95"];
+const BOX_SIZES = ["10", "45", "95"];
+
+function getBoxSize(bType) {
+  if (!bType) return "10";
+  if (bType.includes("45")) return "45";
+  if (bType.includes("95")) return "95";
+  return "10";
+}
+
+const ADMIN_USERS = ["Leo", "Caca", "Fifin", "Astika"];
+const REPORT_USERS = ["Leo", "Fifin", "Caca", "Erna", "Arik", "Trisna"];
+const RESTRICTED_USERS = ["Erna", "Arik", "Trisna"];
+
+function uid() {
+  return Date.now() + "-" + Math.random().toString(36).slice(2, 9);
+}
+
+function formatDate(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  return d.toLocaleString("en-US", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function formatDateLong(yyyy_mm_dd) {
+  if (!yyyy_mm_dd) return "-";
+  const parts = yyyy_mm_dd.split("-");
+  if (parts.length !== 3) return yyyy_mm_dd;
+  const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+  return d.toLocaleDateString("en-US", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+}
+
+function getTodayString() {
+  const d = new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function PaginationBar({ currentPage, totalItems, pageSize, onPageChange, onPageSizeChange }) {
+  const totalPages = Math.ceil(totalItems / pageSize) || 1;
+  const startItem = totalItems === 0 ? 0 : (currentPage - 1) * pageSize + 1;
+  const endItem = Math.min(currentPage * pageSize, totalItems);
+
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", background: "#FAFBFD", borderTop: "1px solid var(--border)", flexWrap: "wrap", gap: "10px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "13px", color: "var(--ink-soft)", fontWeight: "600" }}>
+        <span>Show:</span>
+        <select className="inline-select" value={pageSize} onChange={(e) => { onPageSizeChange(Number(e.target.value)); onPageChange(1); }} style={{ padding: "4px 8px" }}>
+          <option value={10}>10</option>
+          <option value={50}>50</option>
+          <option value={100}>100</option>
+        </select>
+        <span>per page ({startItem}-{endItem} of {totalItems} items)</span>
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+        <button className="btn btn-outline" style={{ padding: "6px 12px", fontSize: "12px" }} disabled={currentPage <= 1} onClick={() => onPageChange(currentPage - 1)}>
+          ◀ Previous
+        </button>
+        <span style={{ fontSize: "13px", fontWeight: "700", color: "var(--ink)" }}>Page {currentPage} of {totalPages}</span>
+        <button className="btn btn-outline" style={{ padding: "6px 12px", fontSize: "12px" }} disabled={currentPage >= totalPages} onClick={() => onPageChange(currentPage + 1)}>
+          Next ▶
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function App() {
+  const [sidebarOpen, setSidebarOpen] = useState(window.innerWidth > 820);
+
+  const [userName, setUserName] = useState(() => {
+    try { return localStorage.getItem("namaPenggunaBoxTracing") || ""; } catch (e) { return ""; }
+  });
+
+  const isAdmin = ADMIN_USERS.some((a) => a.toLowerCase() === userName.trim().toLowerCase());
+  const isReportUser = REPORT_USERS.some((u) => u.toLowerCase() === userName.trim().toLowerCase());
+  const isRestrictedUser = RESTRICTED_USERS.some((r) => r.toLowerCase() === userName.trim().toLowerCase());
+
+  const [tab, setTab] = useState(() => (isRestrictedUser ? "movement" : "dashboard"));
+  const [masterSubOpen, setMasterSubOpen] = useState(false);
+
+  // INISIALISASI LANGSUNG DARI LOCAL STORAGE AGAR TIDAK PERNAH KEMBALI 0 KETIKA REFRESH / DITIMPA
+  const [movements, setMovements] = useState(() => LocalStore.get("box_movements", []));
+  const [initialBalance, setInitialBalance] = useState(() => LocalStore.get("initial_balance", {}));
+  const [areaCapacity, setAreaCapacity] = useState(() => LocalStore.get("area_capacity", {}));
+  const [history, setHistory] = useState(() => LocalStore.get("movement_history", []));
+
+  const [loading, setLoading] = useState(false);
+  const [loadingBalance, setLoadingBalance] = useState(false);
+
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+
+  const [nameInput, setNameInput] = useState("");
+  const [showUserMenu, setShowUserMenu] = useState(false);
+
+  const [searchMovement, setSearchMovement] = useState("");
+
+  // RENTANG TANGGAL LAPORAN (START & END DATE)
+  const [reportStartDate, setReportStartDate] = useState(getTodayString);
+  const [reportEndDate, setReportEndDate] = useState(getTodayString);
+
+  // PAGINATION
+  const [pageSizeMovement, setPageSizeMovement] = useState(10);
+  const [pageMovement, setPageMovement] = useState(1);
+
+  const [pageSizeHistory, setPageSizeHistory] = useState(10);
+  const [pageHistory, setPageHistory] = useState(1);
+
+  // MODAL STATES
+  const [showAddMovement, setShowAddMovement] = useState(false);
+  const [movementForm, setMovementForm] = useState({ fromLoc: "Sundry", toLoc: "Paper", boxType: "CB-10", condition: "Filled", qty: 1 });
+  const [movementError, setMovementError] = useState("");
+  const [savingMovement, setSavingMovement] = useState(false);
+
+  const [showUpdateMovement, setShowUpdateMovement] = useState(false);
+  const [updateMovForm, setUpdateMovForm] = useState({ fromLoc: "Sundry", toLoc: "Paper", boxType: "CB-10", condition: "Filled", qty: 1 });
+  const [updateMovError, setUpdateMovError] = useState("");
+  const [savingUpdateMov, setSavingUpdateMov] = useState(false);
+
+  const [showUpdateCondition, setShowUpdateCondition] = useState(false);
+  const [conditionForm, setConditionForm] = useState({ location: "Sundry", boxType: "CB-10", prevCondition: "Filled", nextCondition: "Empty", qty: 1 });
+  const [conditionError, setConditionError] = useState("");
+  const [savingCondition, setSavingCondition] = useState(false);
+
+  // MASTER INITIAL BALANCE STATE
+  const [selectedMasterLoc, setSelectedMasterLoc] = useState("Sundry");
+  const [masterBalanceInputs, setMasterBalanceInputs] = useState({});
+  const [savingMasterBalance, setSavingMasterBalance] = useState(false);
+
+  // MASTER AREA CAPACITY STATE (10 / 45 / 95)
+  const [masterCapInputs, setMasterCapInputs] = useState({});
+
+  const [searchHistory, setSearchHistory] = useState("");
+
+  useEffect(() => {
+    if (isRestrictedUser && !["movement", "report"].includes(tab)) {
+      setTab("movement");
+    }
+  }, [userName, isRestrictedUser, tab]);
+
+  // SINKRONISASI DUA ARAH DENGAN FIREBASE JIKA ONLINE (DENGAN PERLINDUNGAN CACHE LOKAL)
+  useEffect(() => {
+    if (isLocalEnv || !db) return;
+
+    let unsub1 = () => {};
+    let unsub2 = () => {};
+    let unsub3 = () => {};
+    let unsub4 = () => {};
+
+    try {
+      unsub1 = db.collection("box_movements").orderBy("timestamp", "desc").onSnapshot((snap) => {
+        if (!snap.empty) {
+          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+          setMovements(list);
+          LocalStore.set("box_movements", list);
+        } else {
+          // JIKA FIREBASE PROYEK BARU MASIH KOSONG, UPLOAD DATA CACHE LOKAL KE FIREBASE AGAR DATA LAMA TIDAK HILANG
+          const cached = LocalStore.get("box_movements", []);
+          if (cached.length > 0) {
+            const batch = db.batch();
+            cached.forEach((item) => batch.set(db.collection("box_movements").doc(item.id), item));
+            batch.commit().catch(() => {});
+          }
+        }
+      });
+
+      unsub2 = db.collection("initial_balance").onSnapshot((snap) => {
+        if (!snap.empty) {
+          const dataMap = {};
+          snap.docs.forEach((d) => {
+            const item = d.data();
+            dataMap[`${item.location}__${item.boxType}__Filled`] = Number(item.filled) || 0;
+            dataMap[`${item.location}__${item.boxType}__Empty`] = Number(item.empty) || 0;
+          });
+          setInitialBalance(dataMap);
+          LocalStore.set("initial_balance", dataMap);
+        } else {
+          const cached = LocalStore.get("initial_balance", {});
+          if (Object.keys(cached).length > 0) {
+            const batch = db.batch();
+            Object.entries(cached).forEach(([key, val]) => {
+              const [loc, bType, cond] = key.split("__");
+              const docId = `${loc}__${bType}`;
+              batch.set(db.collection("initial_balance").doc(docId), {
+                location: loc, boxType: bType, [cond.toLowerCase()]: val
+              }, { merge: true });
+            });
+            batch.commit().catch(() => {});
+          }
+        }
+      });
+
+      unsub3 = db.collection("area_capacity").onSnapshot((snap) => {
+        if (!snap.empty) {
+          const dataMap = {};
+          snap.docs.forEach((d) => {
+            const data = d.data();
+            const cap10 = Number(data.cap10) || 0;
+            const cap45 = Number(data.cap45) || 0;
+            const cap95 = Number(data.cap95) || 0;
+            const totalCap = Number(data.capacity) || (cap10 + cap45 + cap95) || 100;
+            dataMap[d.id] = { cap10, cap45, cap95, capacity: totalCap };
+          });
+          setAreaCapacity(dataMap);
+          LocalStore.set("area_capacity", dataMap);
+        }
+      });
+
+      if (isAdmin || isReportUser) {
+        unsub4 = db.collection("movement_history").orderBy("timestamp", "desc").limit(500).onSnapshot((snap) => {
+          if (!snap.empty) {
+            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+            setHistory(list);
+            LocalStore.set("movement_history", list);
+          }
+        });
+      }
+    } catch (e) {
+      console.warn("Real-time listener fallback active:", e);
+    }
+
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
+  }, [isAdmin, isReportUser]);
+
+  useEffect(() => {
+    if (toast) {
+      clearTimeout(toastTimer.current);
+      toastTimer.current = setTimeout(() => setToast(null), 3200);
+    }
+    return () => clearTimeout(toastTimer.current);
+  }, [toast]);
+
+  function selectTab(tabName) {
+    setTab(tabName);
+    if (window.innerWidth <= 820) setSidebarOpen(false);
+  }
+
+  function startSession() {
+    const name = nameInput.trim();
+    if (!name) return;
+    try { localStorage.setItem("namaPenggunaBoxTracing", name); } catch (e) {}
+    setUserName(name);
+    const restricted = RESTRICTED_USERS.some((r) => r.toLowerCase() === name.toLowerCase());
+    if (restricted) setTab("movement");
+  }
+
+  function relogin() {
+    try { localStorage.removeItem("namaPenggunaBoxTracing"); } catch (e) {}
+    setUserName("");
+    setNameInput("");
+    setShowUserMenu(false);
+  }
+
+  // HITUNG STOK AKTUAL REAL-TIME PER LOKASI + TIPE BOX + KONDISI
+  function getStock(loc, bType, cond) {
+    let qty = initialBalance[`${loc}__${bType}__${cond}`] || 0;
+
+    movements.forEach((m) => {
+      const mQty = Number(m.qty) || 0;
+      if (m.actionType === "condition_update") {
+        if (m.location === loc && m.boxType === bType) {
+          if (m.prevCondition === cond) qty -= mQty;
+          if (m.nextCondition === cond) qty += mQty;
+        }
+      } else {
+        if (m.boxType === bType) {
+          if (m.toLoc === loc && m.condition === cond) qty += mQty;
+          if (m.fromLoc === loc && m.condition === cond) qty -= mQty;
+        }
+      }
+    });
+
+    return Math.max(0, qty);
+  }
+
+  // STATISTIK STOK DAN KAPASITAS 10 / 45 / 95 PER LOKASI
+  const locationStats = useMemo(() => {
+    return LOCATIONS.map((loc) => {
+      let filled = 0;
+      let empty = 0;
+      let boxes10 = 0;
+      let boxes45 = 0;
+      let boxes95 = 0;
+
+      BOX_TYPES.forEach((bType) => {
+        const f = getStock(loc, bType, "Filled");
+        const e = getStock(loc, bType, "Empty");
+        filled += f;
+        empty += e;
+        const sz = getBoxSize(bType);
+        if (sz === "10") boxes10 += (f + e);
+        else if (sz === "45") boxes45 += (f + e);
+        else if (sz === "95") boxes95 += (f + e);
+      });
+
+      const totalBoxes = filled + empty;
+      const capData = areaCapacity[loc] || {};
+      const cap10 = Number(capData.cap10) || 0;
+      const cap45 = Number(capData.cap45) || 0;
+      const cap95 = Number(capData.cap95) || 0;
+      const maxCap = Number(capData.capacity) || (cap10 + cap45 + cap95) || 100;
+
+      return {
+        location: loc,
+        filled,
+        empty,
+        boxes10,
+        boxes45,
+        boxes95,
+        cap10,
+        cap45,
+        cap95,
+        totalBoxes,
+        maxCap
+      };
+    });
+  }, [movements, initialBalance, areaCapacity]);
+
+  // LIVE STOCK INDICATOR MODAL
+  const currentAddMovStock = useMemo(() => {
+    return getStock(movementForm.fromLoc, movementForm.boxType, movementForm.condition);
+  }, [movements, initialBalance, movementForm.fromLoc, movementForm.boxType, movementForm.condition]);
+
+  const currentUpdateMovStock = useMemo(() => {
+    return getStock(updateMovForm.fromLoc, updateMovForm.boxType, updateMovForm.condition);
+  }, [movements, initialBalance, updateMovForm.fromLoc, updateMovForm.boxType, updateMovForm.condition]);
+
+  const currentConditionStock = useMemo(() => {
+    return getStock(conditionForm.location, conditionForm.boxType, conditionForm.prevCondition);
+  }, [movements, initialBalance, conditionForm.location, conditionForm.boxType, conditionForm.prevCondition]);
+
+  const filteredMovements = useMemo(() => {
+    return movements.filter((m) => {
+      if (!searchMovement.trim()) return true;
+      const q = searchMovement.trim().toLowerCase();
+      return (
+        (m.boxType || "").toLowerCase().includes(q) ||
+        (m.fromLoc || "").toLowerCase().includes(q) ||
+        (m.toLoc || "").toLowerCase().includes(q) ||
+        (m.location || "").toLowerCase().includes(q) ||
+        (m.createdBy || "").toLowerCase().includes(q) ||
+        (m.condition || "").toLowerCase().includes(q)
+      );
+    });
+  }, [movements, searchMovement]);
+
+  const paginatedMovements = useMemo(() => {
+    const start = (pageMovement - 1) * pageSizeMovement;
+    return filteredMovements.slice(start, start + pageSizeMovement);
+  }, [filteredMovements, pageMovement, pageSizeMovement]);
+
+  // REPORT SUMMARY DENGAN FILTER RANGE (MULAI DARI & SAMPAI)
+  const reportSummary = useMemo(() => {
+    let sDate = reportStartDate || getTodayString();
+    let eDate = reportEndDate || sDate;
+
+    if (sDate > eDate) {
+      const tmp = sDate;
+      sDate = eDate;
+      eDate = tmp;
+    }
+
+    const start = new Date(sDate + "T00:00:00").getTime();
+    const end = new Date(eDate + "T23:59:59.999").getTime();
+
+    const filtered = movements.filter((m) => {
+      if (!m.timestamp) return false;
+      const t = new Date(m.timestamp).getTime();
+      return !isNaN(t) && t >= start && t <= end && m.actionType !== "condition_update";
+    });
+
+    const routeMap = {};
+    filtered.forEach((m) => {
+      const key = `${m.fromLoc.trim().toLowerCase()}||${m.toLoc.trim().toLowerCase()}`;
+      routeMap[key] = (routeMap[key] || 0) + (Number(m.qty) || 0);
+    });
+
+    const getRouteQty = (from, to) => routeMap[`${from.toLowerCase()}||${to.toLowerCase()}`] || 0;
+
+    const groupSundry = [
+      { label: "Sundry to Paper", from: "Sundry", to: "Paper", qty: getRouteQty("Sundry", "Paper") },
+      { label: "Sundry to Filter", from: "Sundry", to: "Filter", qty: getRouteQty("Sundry", "Filter") },
+      { label: "Sundry to Cutting", from: "Sundry", to: "Cutting", qty: getRouteQty("Sundry", "Cutting") },
+      { label: "Sundry to Remove Filter", from: "Sundry", to: "Remove Filter", qty: getRouteQty("Sundry", "Remove Filter") },
+    ];
+
+    const groupPaper = [
+      { label: "Paper to BB1", from: "Paper", to: "BB1", qty: getRouteQty("Paper", "BB1") },
+      { label: "Paper to BB2", from: "Paper", to: "BB2", qty: getRouteQty("Paper", "BB2") },
+      { label: "Paper to BB3", from: "Paper", to: "BB3", qty: getRouteQty("Paper", "BB3") },
+      { label: "Paper to GP3", from: "Paper", to: "GP3", qty: getRouteQty("Paper", "GP3") },
+    ];
+
+    const groupFilter = [
+      { label: "Filter to BB1", from: "Filter", to: "BB1", qty: getRouteQty("Filter", "BB1") },
+      { label: "Filter to BB2", from: "Filter", to: "BB2", qty: getRouteQty("Filter", "BB2") },
+      { label: "Filter to BB3", from: "Filter", to: "BB3", qty: getRouteQty("Filter", "BB3") },
+      { label: "Filter to GP3", from: "Filter", to: "GP3", qty: getRouteQty("Filter", "GP3") },
+    ];
+
+    const groupReturn = [
+      { label: "BB1 to Sundry", from: "BB1", to: "Sundry", qty: getRouteQty("BB1", "Sundry") },
+      { label: "BB2 to Sundry", from: "BB2", to: "Sundry", qty: getRouteQty("BB2", "Sundry") },
+      { label: "BB3 to Sundry", from: "BB3", to: "Sundry", qty: getRouteQty("BB3", "Sundry") },
+      { label: "GP3 to Sundry", from: "GP3", to: "Sundry", qty: getRouteQty("GP3", "Sundry") },
+    ];
+
+    const sumQty = (arr) => arr.reduce((acc, r) => acc + r.qty, 0);
+
+    return {
+      startDate: sDate,
+      endDate: eDate,
+      groupSundry,
+      groupPaper,
+      groupFilter,
+      groupReturn,
+      totalSundry: sumQty(groupSundry),
+      totalPaper: sumQty(groupPaper),
+      totalFilter: sumQty(groupFilter),
+      totalReturn: sumQty(groupReturn),
+      totalMovedToday: filtered.reduce((acc, m) => acc + (Number(m.qty) || 0), 0),
+      totalTransactions: filtered.length
+    };
+  }, [movements, reportStartDate, reportEndDate]);
+
+  async function handleAddMovement() {
+    setMovementError("");
+    const { fromLoc, toLoc, boxType, condition, qty } = movementForm;
+    const numQty = Number(qty);
+
+    if (!fromLoc || !toLoc || !boxType || !condition) {
+      setMovementError("All fields are required.");
+      return;
+    }
+    if (fromLoc.trim().toLowerCase() === toLoc.trim().toLowerCase()) {
+      setMovementError("From Location and To Location cannot be the same.");
+      return;
+    }
+    if (isNaN(numQty) || numQty <= 0) {
+      setMovementError("Quantity must be greater than 0.");
+      return;
+    }
+
+    const availableStock = getStock(fromLoc, boxType, condition);
+    if (numQty > availableStock) {
+      setMovementError(`Stock not enough! Current available stock is only ${availableStock} pcs. Please add more stock in 'Initial Stock Balance' first.`);
+      return;
+    }
+
+    setSavingMovement(true);
+    const timestamp = new Date().toISOString();
+
+    const newMov = {
+      id: uid(),
+      actionType: "movement",
+      fromLoc,
+      toLoc,
+      boxType,
+      condition,
+      qty: numQty,
+      createdBy: userName,
+      timestamp
+    };
+
+    const newHist = {
+      id: uid(),
+      action: "Movement",
+      details: `Moved ${numQty} pcs of ${boxType} (${condition}) from ${fromLoc} to ${toLoc}`,
+      fromLoc,
+      toLoc,
+      boxType,
+      qty: numQty,
+      createdBy: userName,
+      timestamp
+    };
+
+    // SIMPAN DI LOCAL STORAGE DULU (AGAR SELALU AMAN)
+    const nextM = [newMov, ...movements];
+    setMovements(nextM);
+    LocalStore.set("box_movements", nextM);
+
+    const nextH = [newHist, ...history];
+    setHistory(nextH);
+    LocalStore.set("movement_history", nextH);
+
+    // JIKA ONLINE DAN FIREBASE ADA, SIMPAN JUGA KE CLOUD
+    if (!isLocalEnv && db) {
+      try {
+        const batch = db.batch();
+        batch.set(db.collection("box_movements").doc(newMov.id), newMov);
+        batch.set(db.collection("movement_history").doc(newHist.id), newHist);
+        await batch.commit();
+      } catch (err) {
+        console.warn("Could not sync to cloud, data preserved locally:", err);
+      }
+    }
+
+    setShowAddMovement(false);
+    setMovementForm({ fromLoc: "Sundry", toLoc: "Paper", boxType: "CB-10", condition: "Filled", qty: 1 });
+    setToast({ type: "success", msg: `Successfully logged movement of ${numQty} box(es).` });
+    setSavingMovement(false);
+  }
+
+  async function handleUpdateMovement() {
+    setUpdateMovError("");
+    const { fromLoc, toLoc, boxType, condition, qty } = updateMovForm;
+    const numQty = Number(qty);
+
+    if (!fromLoc || !toLoc || !boxType || !condition) {
+      setUpdateMovError("All fields are required.");
+      return;
+    }
+    if (fromLoc.trim().toLowerCase() === toLoc.trim().toLowerCase()) {
+      setUpdateMovError("From Location and To Location cannot be the same.");
+      return;
+    }
+    if (isNaN(numQty) || numQty <= 0) {
+      setUpdateMovError("Quantity must be greater than 0.");
+      return;
+    }
+
+    const availableStock = getStock(fromLoc, boxType, condition);
+    if (numQty > availableStock) {
+      setUpdateMovError(`Stock not enough! Current available stock is only ${availableStock} pcs. Please add more stock in 'Initial Stock Balance' first.`);
+      return;
+    }
+
+    setSavingUpdateMov(true);
+    const timestamp = new Date().toISOString();
+
+    const newMov = {
+      id: uid(),
+      actionType: "update_movement",
+      fromLoc,
+      toLoc,
+      boxType,
+      condition,
+      qty: numQty,
+      createdBy: userName,
+      timestamp
+    };
+
+    const newHist = {
+      id: uid(),
+      action: "Update Movement",
+      details: `Updated movement: ${numQty} pcs of ${boxType} (${condition}) from ${fromLoc} to ${toLoc}`,
+      fromLoc,
+      toLoc,
+      boxType,
+      qty: numQty,
+      createdBy: userName,
+      timestamp
+    };
+
+    const nextM = [newMov, ...movements];
+    setMovements(nextM);
+    LocalStore.set("box_movements", nextM);
+
+    const nextH = [newHist, ...history];
+    setHistory(nextH);
+    LocalStore.set("movement_history", nextH);
+
+    if (!isLocalEnv && db) {
+      try {
+        const batch = db.batch();
+        batch.set(db.collection("box_movements").doc(newMov.id), newMov);
+        batch.set(db.collection("movement_history").doc(newHist.id), newHist);
+        await batch.commit();
+      } catch (err) {
+        console.warn("Cloud sync failed, kept locally:", err);
+      }
+    }
+
+    setShowUpdateMovement(false);
+    setToast({ type: "success", msg: `Movement updated successfully (${numQty} pcs).` });
+    setSavingUpdateMov(false);
+  }
+
+  async function handleUpdateCondition() {
+    setConditionError("");
+    const { location, boxType, prevCondition, nextCondition, qty } = conditionForm;
+    const numQty = Number(qty);
+
+    if (!location || !boxType || !prevCondition || !nextCondition) {
+      setConditionError("All fields are required.");
+      return;
+    }
+    if (prevCondition === nextCondition) {
+      setConditionError("Previous and Next condition cannot be the same.");
+      return;
+    }
+    if (isNaN(numQty) || numQty <= 0) {
+      setConditionError("Quantity must be greater than 0.");
+      return;
+    }
+
+    const availableStock = getStock(location, boxType, prevCondition);
+    if (numQty > availableStock) {
+      setConditionError(`Stock not enough! Current available stock is only ${availableStock} pcs. Please add more stock in 'Initial Stock Balance' first.`);
+      return;
+    }
+
+    setSavingCondition(true);
+    const timestamp = new Date().toISOString();
+
+    const newMov = {
+      id: uid(),
+      actionType: "condition_update",
+      location,
+      fromLoc: location,
+      toLoc: location,
+      boxType,
+      prevCondition,
+      nextCondition,
+      condition: `${prevCondition} → ${nextCondition}`,
+      qty: numQty,
+      createdBy: userName,
+      timestamp
+    };
+
+    const newHist = {
+      id: uid(),
+      action: "Condition Update",
+      details: `Updated condition at ${location}: ${numQty} pcs of ${boxType} changed from ${prevCondition} to ${nextCondition}`,
+      location,
+      boxType,
+      qty: numQty,
+      createdBy: userName,
+      timestamp
+    };
+
+    const nextM = [newMov, ...movements];
+    setMovements(nextM);
+    LocalStore.set("box_movements", nextM);
+
+    const nextH = [newHist, ...history];
+    setHistory(nextH);
+    LocalStore.set("movement_history", nextH);
+
+    if (!isLocalEnv && db) {
+      try {
+        const batch = db.batch();
+        batch.set(db.collection("box_movements").doc(newMov.id), newMov);
+        batch.set(db.collection("movement_history").doc(newHist.id), newHist);
+        await batch.commit();
+      } catch (err) {
+        console.warn("Cloud sync failed, kept locally:", err);
+      }
+    }
+
+    setShowUpdateCondition(false);
+    setToast({ type: "success", msg: `Condition updated for ${numQty} pcs of ${boxType} at ${location}.` });
+    setSavingCondition(false);
+  }
+
+  async function saveInitialBalanceRow(location, bType) {
+    const filledVal = Number(masterBalanceInputs[`${location}__${bType}__Filled`] ?? (initialBalance[`${location}__${bType}__Filled`] || 0));
+    const emptyVal = Number(masterBalanceInputs[`${location}__${bType}__Empty`] ?? (initialBalance[`${location}__${bType}__Empty`] || 0));
+
+    const next = {
+      ...initialBalance,
+      [`${location}__${bType}__Filled`]: filledVal,
+      [`${location}__${bType}__Empty`]: emptyVal
+    };
+    setInitialBalance(next);
+    LocalStore.set("initial_balance", next);
+
+    if (!isLocalEnv && db) {
+      const docId = `${location}__${bType}`;
+      try {
+        await db.collection("initial_balance").doc(docId).set({
+          location, boxType: bType, filled: filledVal, empty: emptyVal, updatedBy: userName, updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (err) {
+        console.warn("Firebase save error, saved locally:", err);
+      }
+    }
+    setToast({ type: "success", msg: `Saved initial balance for ${bType} at ${location}.` });
+  }
+
+  async function saveAllInitialBalanceForLocation(location) {
+    setSavingMasterBalance(true);
+    const next = { ...initialBalance };
+    BOX_TYPES.forEach((bType) => {
+      const f = Number(masterBalanceInputs[`${location}__${bType}__Filled`] ?? (initialBalance[`${location}__${bType}__Filled`] || 0));
+      const e = Number(masterBalanceInputs[`${location}__${bType}__Empty`] ?? (initialBalance[`${location}__${bType}__Empty`] || 0));
+      next[`${location}__${bType}__Filled`] = f;
+      next[`${location}__${bType}__Empty`] = e;
+    });
+    setInitialBalance(next);
+    LocalStore.set("initial_balance", next);
+
+    if (!isLocalEnv && db) {
+      try {
+        const batch = db.batch();
+        const now = new Date().toISOString();
+        BOX_TYPES.forEach((bType) => {
+          const f = next[`${location}__${bType}__Filled`];
+          const e = next[`${location}__${bType}__Empty`];
+          const docRef = db.collection("initial_balance").doc(`${location}__${bType}`);
+          batch.set(docRef, {
+            location, boxType: bType, filled: f, empty: e, updatedBy: userName, updatedAt: now
+          }, { merge: true });
+        });
+        await batch.commit();
+      } catch (err) {
+        console.warn("Firebase save all error, saved locally:", err);
+      }
+    }
+    setToast({ type: "success", msg: `All initial balances for ${location} saved successfully!` });
+    setSavingMasterBalance(false);
+  }
+
+  async function saveAreaCapacityRow(location) {
+    const capData = areaCapacity[location] || {};
+    const cap10 = Number(masterCapInputs[`${location}__cap10`] ?? capData.cap10 ?? 0);
+    const cap45 = Number(masterCapInputs[`${location}__cap45`] ?? capData.cap45 ?? 0);
+    const cap95 = Number(masterCapInputs[`${location}__cap95`] ?? capData.cap95 ?? 0);
+    const totalCap = cap10 + cap45 + cap95;
+
+    const next = {
+      ...areaCapacity,
+      [location]: { cap10, cap45, cap95, capacity: totalCap }
+    };
+    setAreaCapacity(next);
+    LocalStore.set("area_capacity", next);
+
+    if (!isLocalEnv && db) {
+      try {
+        await db.collection("area_capacity").doc(location).set({
+          location, cap10, cap45, cap95, capacity: totalCap, updatedBy: userName, updatedAt: new Date().toISOString()
+        }, { merge: true });
+      } catch (err) {
+        console.warn("Firebase capacity save error, saved locally:", err);
+      }
+    }
+    setToast({ type: "success", msg: `Capacity for ${location} updated successfully!` });
+  }
+
+  async function handleDeleteMovement(mov) {
+    if (!window.confirm("Are you sure you want to delete this movement record?")) return;
+    const nextM = movements.filter((m) => m.id !== mov.id);
+    setMovements(nextM);
+    LocalStore.set("box_movements", nextM);
+
+    if (!isLocalEnv && db) {
+      try {
+        await db.collection("box_movements").doc(mov.id).delete();
+      } catch (err) {}
+    }
+    setToast({ type: "success", msg: "Record deleted." });
+  }
+
+  if (!userName) {
+    return (
+      <div style={{
+        fontFamily: "'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif",
+        minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+        background: "#F3F5F9", padding: 24,
+      }}>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;800&display=swap');`}</style>
+        <div style={{
+          background: "white", borderRadius: 20, padding: 30, maxWidth: 400, width: "100%",
+          boxShadow: "0 20px 40px -20px rgba(0,0,0,0.25)", textAlign: "center",
+        }}>
+          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6, color: "#1F2430" }}>Box Monitoring System</div>
+          <div style={{ fontSize: 13.5, color: "#6B7280", marginBottom: 18 }}>Please enter your name</div>
+          <input
+            autoFocus value={nameInput} onChange={(e) => setNameInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") startSession(); }} placeholder="Your name"
+            style={{ width: "100%", border: "1.5px solid #E4E7EF", borderRadius: 12, padding: "12px 14px", fontSize: 15, fontFamily: "inherit", marginBottom: 14, textAlign: "center", boxSizing: "border-box" }}
+          />
+          <button onClick={startSession} disabled={!nameInput.trim()} style={{ width: "100%", border: "none", borderRadius: 12, padding: "13px", fontWeight: 800, fontSize: 14.5, color: "white", background: "linear-gradient(145deg,#3454D1,#24399A)", cursor: nameInput.trim() ? "pointer" : "not-allowed", opacity: nameInput.trim() ? 1 : 0.5 }}>
+            Start →
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const totalPlantCapacity = locationStats.reduce((acc, curr) => acc + curr.maxCap, 0);
+  const totalPlantBoxes = locationStats.reduce((acc, curr) => acc + curr.totalBoxes, 0);
+  const overallOccupancy = totalPlantCapacity > 0 ? Math.round((totalPlantBoxes / totalPlantCapacity) * 100) : 0;
+
+  return (
+    <div className="app-root">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500;600&display=swap');
+        :root{
+          --ink:#1F2430; --ink-soft:#6B7280; --bg:#F3F5F9; --surface:#FFFFFF;
+          --primary:#3454D1; --primary-dark:#24399A; --primary-tint:#E8ECFC;
+          --terisi:#2F9E62; --terisi-tint:#E4F6EC;
+          --kosong:#946200; --kosong-tint:#FBF0DC;
+          --border:#E4E7EF; --danger:#D64545; --danger-tint:#FBE9E9;
+        }
+        *{ box-sizing:border-box; }
+        .app-root{ font-family:'Plus Jakarta Sans',ui-sans-serif,system-ui,sans-serif; color:var(--ink); background:var(--bg); min-height:100vh; display:flex; }
+        .mono{ font-family:'IBM Plex Mono',ui-monospace,monospace; }
+
+        .sidebar-backdrop{ display:none; }
+
+        .sidebar{
+          width:260px; background:var(--surface); border-right:1px solid var(--border);
+          display:flex; flex-direction:column; padding:20px 14px; position:sticky; top:0;
+          height:100vh; flex-shrink:0; z-index:25; transition:all 0.25s ease;
+        }
+        .sidebar.closed{ width:0; padding:20px 0; opacity:0; overflow:hidden; border-right:none; pointer-events:none; }
+        .sidebar-brand{ display:flex; align-items:center; gap:10px; font-weight:800; font-size:18px; margin-bottom:24px; padding:0 8px; white-space:nowrap; position:relative; }
+        .sidebar-brand-dot{ width:34px; height:34px; border-radius:10px; overflow:hidden; flex-shrink:0; }
+        .sidebar-brand-dot svg{ width:100%; height:100%; display:block; }
+        .sidebar-close-btn{ display:none; margin-left:auto; border:none; background:var(--bg); width:30px; height:30px; border-radius:8px; cursor:pointer; font-size:14px; font-weight:800; color:var(--ink-soft); align-items:center; justify-content:center; }
+        .sidebar-menu{ display:flex; flex-direction:column; gap:6px; flex:1; }
+        .sidebar-btn{ border:none; background:transparent; padding:12px 14px; border-radius:12px; font-weight:700; font-size:13.5px; color:var(--ink-soft); cursor:pointer; display:flex; align-items:center; gap:10px; width:100%; text-align:left; white-space:nowrap; transition:all 0.15s ease; }
+        .sidebar-btn:hover{ background:var(--bg); color:var(--ink); }
+        .sidebar-btn.active{ background:var(--ink); color:white; }
+        .sub-menu-container{ padding-left:14px; display:flex; flex-direction:column; gap:4px; margin-top:2px; margin-bottom:4px; }
+        .sub-menu-btn{ padding:9px 12px; font-size:12.5px; }
+
+        .main-wrapper{ flex:1; min-width:0; overflow-y:auto; }
+        .top-header{ background:var(--surface); border-bottom:1px solid var(--border); padding:12px 20px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:15; }
+        .toggle-btn{ border:1.5px solid var(--border); background:var(--bg); width:38px; height:38px; border-radius:10px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:16px; color:var(--ink); transition:all 0.15s ease; }
+        .top-user-wrapper{ position:relative; margin-left:auto; display:flex; align-items:center; gap:10px; }
+        .mode-badge{ padding:6px 12px; border-radius:99px; font-size:11.5px; font-weight:800; border:1px solid var(--border); display:flex; align-items:center; gap:5px; }
+        .mode-badge.local{ background:#FAFBFD; color:#6B7280; }
+        .mode-badge.cloud{ background:#E4F6EC; color:#2F9E62; border-color:#BFDFC7; }
+        .user-badge{ border:1px solid var(--border); background:var(--surface); border-radius:999px; padding:8px 16px; font-weight:800; font-size:13px; color:var(--ink); cursor:pointer; display:flex; align-items:center; gap:8px; }
+        .user-menu{ position:absolute; right:0; top:calc(100% + 8px); background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 12px 24px -12px rgba(0,0,0,0.15); padding:6px; min-width:150px; z-index:30; }
+        .user-menu-item{ width:100%; text-align:left; border:none; background:transparent; padding:9px 10px; border-radius:8px; font-size:13px; font-weight:700; color:var(--ink); cursor:pointer; }
+        .aksi-btn{ width:30px; height:30px; border-radius:9px; border:1px solid var(--border); background:var(--surface); cursor:pointer; font-size:13px; display:flex; align-items:center; justify-content:center; }
+        .aksi-btn.hapus{ background:var(--danger-tint); border-color:var(--danger); color:var(--danger); }
+        .stat-strip{ display:flex; gap:10px; padding:16px 20px 0; flex-wrap:wrap; }
+        .stat-chip{ flex:1; min-width:130px; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 16px; }
+        .stat-chip .num{ font-size:24px; font-weight:800; line-height:1; }
+        .stat-chip .lbl{ font-size:12px; color:var(--ink-soft); margin-top:4px; }
+        .stat-section-label{ font-size:12px; font-weight:800; color:var(--ink-soft); text-transform:uppercase; letter-spacing:0.03em; padding:20px 20px 0; }
+        .content{ max-width:1100px; margin:0 auto; padding:16px 20px 60px; }
+        .toolbar{ display:flex; gap:10px; align-items:center; margin-bottom:14px; flex-wrap:wrap; }
+        .search-box{ flex:1; min-width:200px; display:flex; align-items:center; gap:8px; background:var(--surface); border:1.5px solid var(--border); border-radius:12px; padding:10px 12px; }
+        .search-box input{ border:none; outline:none; background:transparent; flex:1; font-size:14px; font-family:inherit; color:var(--ink); }
+        .btn{ border:none; border-radius:12px; padding:11px 18px; font-weight:800; font-size:13.5px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+        .btn-primary{ background:linear-gradient(145deg,var(--primary),var(--primary-dark)); color:white; box-shadow:0 10px 20px -10px rgba(52,84,209,0.5); }
+        .btn-outline{ background:var(--surface); border:1.5px solid var(--border); color:var(--ink); }
+        .card{ background:var(--surface); border:1px solid var(--border); border-radius:16px; overflow:hidden; }
+        table{ width:100%; border-collapse:collapse; font-size:13.5px; }
+        thead th{ text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-soft); padding:12px 14px; border-bottom:1px solid var(--border); background:#FAFBFD; white-space:nowrap; }
+        tbody td{ padding:11px 14px; border-bottom:1px solid var(--border); vertical-align:middle; }
+        select.inline-select{ border:1.5px solid var(--border); border-radius:99px; padding:6px 10px; font-size:12.5px; font-family:inherit; color:var(--ink); background:#FFFDFC; }
+        .badge{ display:inline-flex; padding:4px 10px; border-radius:999px; font-size:11.5px; font-weight:800; }
+        .badge.filled{ background:var(--terisi-tint); color:var(--terisi); }
+        .badge.empty{ background:var(--kosong-tint); color:var(--kosong); }
+        .badge.neutral{ background:#F0F2F7; color:var(--ink); }
+        .empty-state{ text-align:center; padding:40px 16px; color:var(--ink-soft); }
+        .toast{ position:fixed; left:50%; top:16px; transform:translateX(-50%); max-width:440px; width:calc(100% - 36px); border-radius:14px; padding:12px 14px; display:flex; align-items:center; gap:9px; font-size:13.5px; font-weight:700; box-shadow:0 16px 30px -14px rgba(0,0,0,0.4); z-index:60; }
+        .toast.success{ background:#EAF4EC; color:#2F5D3F; border:1px solid #BFDFC7; }
+        .toast.error{ background:var(--danger-tint); color:var(--danger); border:1px solid #EFC3BC; }
+        .modal-overlay{ position:fixed; inset:0; background:rgba(31,36,48,0.5); display:flex; align-items:center; justify-content:center; z-index:50; padding:20px; }
+        .modal-box{ background:var(--surface); width:100%; max-width:560px; border-radius:20px; padding:22px; max-height:88vh; overflow-y:auto; }
+        .modal-head{ display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
+        .modal-title{ font-size:18px; font-weight:800; }
+        .modal-close{ border:none; background:#F0F2F7; width:30px; height:30px; border-radius:10px; cursor:pointer; font-size:14px; }
+        .section-label{ font-size:12px; font-weight:800; color:var(--primary-dark); text-transform:uppercase; letter-spacing:0.03em; margin:0 0 10px; }
+        .field{ margin-bottom:13px; }
+        .field label{ display:block; font-size:12.5px; font-weight:700; color:var(--ink-soft); margin-bottom:6px; }
+        .field select, .field input{ width:100%; border:1.5px solid var(--border); background:#FFFDFC; border-radius:11px; padding:10px 12px; font-size:14px; font-family:inherit; color:var(--ink); }
+        .row-2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+        .row-3{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px; }
+        .info-stat-box{ background:#F3F5F9; border:1px solid var(--border); border-radius:11px; padding:10px 14px; font-size:13px; margin-bottom:14px; display:flex; justify-content:space-between; align-items:center; }
+        .error-box{ background:var(--danger-tint); color:var(--danger); border-radius:11px; padding:10px 12px; font-size:12.5px; font-weight:700; margin-bottom:12px; }
+        .table-scroll{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
+        .dashboard-grid{ display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:16px; margin-top:16px; }
+        .dashboard-card{ background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:18px; }
+        .dashboard-card-title{ font-size:15px; font-weight:800; color:var(--ink); display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+        .progress-bar-bg{ background:#E4E7EF; border-radius:99px; height:10px; width:100%; overflow:hidden; margin:10px 0 12px; }
+        .progress-bar-fill{ height:100%; border-radius:99px; transition:width 0.4s ease; }
+
+        /* TAMPILAN REPORT 4 KARTU */
+        .report-grid-section {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+          gap: 16px;
+          margin-top: 16px;
+        }
+        .report-card-group {
+          background: var(--surface);
+          border: 1px solid var(--border);
+          border-radius: 16px;
+          padding: 18px 20px;
+          box-shadow: 0 4px 12px -4px rgba(0,0,0,0.03);
+        }
+        .report-card-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          border-bottom: 1.5px solid var(--border);
+          padding-bottom: 12px;
+          margin-bottom: 14px;
+        }
+        .report-card-title {
+          font-size: 14.5px;
+          font-weight: 800;
+          color: var(--ink);
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .report-card-total-badge {
+          background: #EEF2FF;
+          color: #3454D1;
+          padding: 4px 12px;
+          border-radius: 999px;
+          font-size: 12.5px;
+          font-weight: 800;
+        }
+        .report-row-list {
+          display: flex;
+          flex-direction: column;
+          gap: 8px;
+        }
+        .report-row-item {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 9px 14px;
+          background: #FAFBFD;
+          border: 1px solid var(--border);
+          border-radius: 10px;
+          font-size: 13.5px;
+        }
+        .report-row-label {
+          font-weight: 700;
+          color: #374151;
+        }
+        .report-row-qty {
+          font-weight: 800;
+          color: #3454D1;
+        }
+
+        @media (max-width:820px){
+          .sidebar{ position:fixed; inset:0 auto 0 0; height:100vh; box-shadow:0 0 20px rgba(0,0,0,0.15); }
+          .sidebar-close-btn{ display:flex; }
+          .sidebar-backdrop{ display:block; position:fixed; inset:0; background:rgba(31,36,48,0.4); z-index:20; }
+        }
+      `}</style>
+
+      {toast && (
+        <div className={"toast " + toast.type}>
+          <span>{toast.type === "success" ? "✅" : "⚠️"}</span>
+          <span style={{ flex: 1 }}>{toast.msg}</span>
+          <button onClick={() => setToast(null)} style={{ background: "none", border: "none", color: "inherit", cursor: "pointer" }}>✕</button>
+        </div>
+      )}
+
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={() => setSidebarOpen(false)} />}
+
+      <div className={`sidebar ${sidebarOpen ? "" : "closed"}`}>
+        <div className="sidebar-brand">
+          <div className="sidebar-brand-dot">
+            <svg viewBox="0 0 100 100" width="34" height="34">
+              <rect width="100" height="100" rx="22" fill="#EAF1FB" />
+              <rect x="20" y="46" width="60" height="34" rx="6" fill="#FFFFFF" stroke="#B9D3EC" strokeWidth="2.5" />
+              <line x1="30" y1="50" x2="30" y2="76" stroke="#B9D3EC" strokeWidth="2" />
+              <line x1="40" y1="50" x2="40" y2="76" stroke="#B9D3EC" strokeWidth="2" />
+              <line x1="60" y1="50" x2="60" y2="76" stroke="#B9D3EC" strokeWidth="2" />
+              <line x1="70" y1="50" x2="70" y2="76" stroke="#B9D3EC" strokeWidth="2" />
+              <rect x="30" y="58" width="22" height="10" rx="2" fill="#1F2430" opacity="0.85" />
+              <rect x="16" y="32" width="68" height="18" rx="7" fill="#2F6FED" />
+              <rect x="26" y="38" width="48" height="4" rx="2" fill="#5C8CF2" />
+              <rect x="9" y="36" width="10" height="10" rx="3" fill="#F5B942" />
+              <rect x="81" y="36" width="10" height="10" rx="3" fill="#F5B942" />
+            </svg>
+          </div>
+          Box Monitoring
+          <button className="sidebar-close-btn" onClick={() => setSidebarOpen(false)} title="Close Sidebar">✕</button>
+        </div>
+
+        <div className="sidebar-menu">
+          {!isRestrictedUser && (
+            <button className={"sidebar-btn " + (tab === "dashboard" ? "active" : "")} onClick={() => selectTab("dashboard")}>
+              📊 Dashboard
+            </button>
+          )}
+
+          <button className={"sidebar-btn " + (tab === "movement" ? "active" : "")} onClick={() => selectTab("movement")}>
+            🔄 Box Movement
+          </button>
+
+          {(isReportUser || isAdmin) && (
+            <button className={"sidebar-btn " + (tab === "report" ? "active" : "")} onClick={() => selectTab("report")}>
+              📈 Report
+            </button>
+          )}
+
+          {isAdmin && (
+            <>
+              <button className={"sidebar-btn " + (tab.startsWith("master_") ? "active" : "")} onClick={() => setMasterSubOpen((s) => !s)}>
+                <span>📁 Master</span>
+                <span style={{ marginLeft: "auto", fontSize: "11px" }}>{masterSubOpen ? "▲" : "▼"}</span>
+              </button>
+              {masterSubOpen && (
+                <div className="sub-menu-container">
+                  <button className={"sidebar-btn sub-menu-btn " + (tab === "master_balance" ? "active" : "")} onClick={() => selectTab("master_balance")}>
+                    💰 Initial Stock Balance
+                  </button>
+                  <button className={"sidebar-btn sub-menu-btn " + (tab === "master_capacity" ? "active" : "")} onClick={() => selectTab("master_capacity")}>
+                    🏬 Area Capacity
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          {isAdmin && (
+            <button className={"sidebar-btn " + (tab === "history" ? "active" : "")} onClick={() => selectTab("history")}>
+              📜 Movement History
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="main-wrapper">
+        <div className="top-header">
+          <button className="toggle-btn" onClick={() => setSidebarOpen((s) => !s)} title={sidebarOpen ? "Close Sidebar" : "Open Sidebar"}>
+            {sidebarOpen ? "◀" : "☰"}
+          </button>
+          <div className="top-user-wrapper">
+            <div className={"mode-badge " + (isLocalEnv ? "local" : "cloud")}>
+              {isLocalEnv ? "💻 Local Storage Mode" : "☁️ Firebase Cloud Mode"}
+            </div>
+            <button className="user-badge" onClick={() => setShowUserMenu((s) => !s)}>
+              <span>👤 {userName}</span>
+              <span style={{ fontSize: "10px" }}>▼</span>
+            </button>
+            {showUserMenu && (
+              <div className="user-menu" onMouseLeave={() => setShowUserMenu(false)}>
+                <button className="user-menu-item" onClick={relogin}>🔄 Switch User</button>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {tab === "movement" && (
+          <>
+            <div className="stat-section-label">Box Stock per Area (<span style={{color: "var(--terisi)"}}>Filled</span> / <span style={{color: "var(--ink-soft)"}}>Empty</span>):</div>
+            <div className="stat-strip">
+              {locationStats.map((f) => (
+                <div className="stat-chip" key={f.location}>
+                  <div className="num">
+                    <span style={{ color: "var(--terisi)" }}>{f.filled}</span>
+                    <span style={{ fontSize: "18px", color: "var(--ink-soft)", fontWeight: 600 }}> / {f.empty}</span>
+                  </div>
+                  <div className="lbl">{f.location}</div>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="content">
+          {tab === "dashboard" && !isRestrictedUser && (
+            <>
+              <div className="toolbar" style={{ marginBottom: "16px" }}>
+                <div style={{ fontSize: "18px", fontWeight: "800", color: "var(--ink)" }}>
+                  📊 Dashboard Area Box Capacity
+                </div>
+              </div>
+
+              <div className="stat-strip" style={{ padding: 0, marginBottom: "20px" }}>
+                <div className="stat-chip">
+                  <div className="num" style={{ color: "var(--primary)" }}>{totalPlantCapacity}</div>
+                  <div className="lbl">Total Plant Capacity</div>
+                </div>
+                <div className="stat-chip">
+                  <div className="num" style={{ color: "var(--terisi)" }}>{totalPlantBoxes}</div>
+                  <div className="lbl">Total Boxes (Filled + Empty)</div>
+                </div>
+                <div className="stat-chip">
+                  <div className="num" style={{ color: overallOccupancy >= 90 ? "var(--danger)" : "var(--primary-dark)" }}>{overallOccupancy}%</div>
+                  <div className="lbl">Average Capacity Occupancy</div>
+                </div>
+                <div className="stat-chip">
+                  <div className="num" style={{ color: "var(--kosong)" }}>{Math.max(0, totalPlantCapacity - totalPlantBoxes)}</div>
+                  <div className="lbl">Available Remaining Capacity</div>
+                </div>
+              </div>
+
+              <div className="section-label">Area Capacity Monitoring:</div>
+              <div className="dashboard-grid">
+                {locationStats.map((item) => {
+                  const pct = item.maxCap > 0 ? Math.round((item.totalBoxes / item.maxCap) * 100) : 0;
+                  let barColor = "var(--terisi)";
+                  let statusText = "🟢 Normal";
+                  let badgeBg = "var(--terisi-tint)";
+                  let textColor = "var(--terisi)";
+
+                  if (pct >= 90) {
+                    barColor = "var(--danger)"; statusText = "🔴 Full"; badgeBg = "var(--danger-tint)"; textColor = "var(--danger)";
+                  } else if (pct >= 70) {
+                    barColor = "var(--kosong)"; statusText = "🟡 Near Full"; badgeBg = "var(--kosong-tint)"; textColor = "var(--kosong)";
+                  }
+
+                  return (
+                    <div className="dashboard-card" key={item.location}>
+                      <div className="dashboard-card-title">
+                        <span>{item.location}</span>
+                        <span className="badge" style={{ background: badgeBg, color: textColor, fontSize: "11px" }}>
+                          {statusText}
+                        </span>
+                      </div>
+
+                      <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }}>
+                        <span style={{ fontSize: "26px", fontWeight: "800", color: "var(--ink)" }}>{item.totalBoxes}</span>
+                        <span style={{ fontSize: "14px", fontWeight: "700", color: "var(--ink-soft)" }}>/ {item.maxCap} Boxes</span>
+                        <span style={{ marginLeft: "auto", fontSize: "15px", fontWeight: "800", color: textColor }}>{pct}%</span>
+                      </div>
+
+                      <div className="progress-bar-bg">
+                        <div className="progress-bar-fill" style={{ width: `${Math.min(100, pct)}%`, background: barColor }} />
+                      </div>
+
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11.5px", fontWeight: "700", marginBottom: "6px" }}>
+                        <span style={{ color: "var(--terisi)" }}>🟢 Filled: {item.filled}</span>
+                        <span style={{ color: "var(--kosong)" }}>🟡 Empty: {item.empty}</span>
+                        <span style={{ color: "var(--ink-soft)" }}>⚪ Free: {Math.max(0, item.maxCap - item.totalBoxes)}</span>
+                      </div>
+
+                      <div style={{ borderTop: "1px dashed var(--border)", paddingTop: "8px", display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--ink-soft)", fontWeight: "600" }}>
+                        <span>Size 10: <b>{item.boxes10}</b>/{item.cap10 || '—'}</span>
+                        <span>Size 45: <b>{item.boxes45}</b>/{item.cap45 || '—'}</span>
+                        <span>Size 95: <b>{item.boxes95}</b>/{item.cap95 || '—'}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {tab === "movement" && (
+            <>
+              <div className="toolbar">
+                <div className="search-box">
+                  <span>🔍</span>
+                  <input placeholder="Search box type, location, condition, or user..." value={searchMovement} onChange={(e) => { setSearchMovement(e.target.value); setPageMovement(1); }} />
+                </div>
+
+                <button
+                  className="btn btn-outline"
+                  style={{ background: "#E8ECFC", borderColor: "#3454D1", color: "#3454D1" }}
+                  onClick={() => {
+                    setUpdateMovError("");
+                    setShowUpdateMovement(true);
+                  }}
+                >
+                  🔄 Update Movement
+                </button>
+
+                <button
+                  className="btn btn-outline"
+                  style={{ background: "#FBF0DC", borderColor: "#946200", color: "#946200" }}
+                  onClick={() => {
+                    setConditionError("");
+                    setShowUpdateCondition(true);
+                  }}
+                >
+                  🏷️ Update Condition
+                </button>
+
+                <button
+                  className="btn btn-primary"
+                  onClick={() => {
+                    setMovementError("");
+                    setShowAddMovement(true);
+                  }}
+                >
+                  ➕ Add Movement
+                </button>
+              </div>
+
+              <div className="card">
+                {loading ? (
+                  <div className="empty-state"><div className="em">⏳</div>Loading data...</div>
+                ) : filteredMovements.length === 0 ? (
+                  <div className="empty-state">
+                    <div className="em">📭</div>
+                    {movements.length === 0 ? "No box movement recorded yet." : "No movement records match your search."}
+                  </div>
+                ) : (
+                  <>
+                    <div className="table-scroll">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Box Type</th>
+                            <th>From Loc</th>
+                            <th>To Loc</th>
+                            <th>Condition</th>
+                            <th>Quantity</th>
+                            <th>Logged By</th>
+                            <th>Date & Time</th>
+                            {isAdmin && <th>Action</th>}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {paginatedMovements.map((m) => (
+                            <tr key={m.id}>
+                              <td style={{ fontWeight: 800 }}>{m.boxType || "-"}</td>
+                              <td>{m.fromLoc || m.location}</td>
+                              <td style={{ fontWeight: 700 }}>{m.toLoc || m.location}</td>
+                              <td>
+                                <span className={"badge " + (m.condition === "Filled" ? "filled" : m.condition === "Empty" ? "empty" : "neutral")}>
+                                  {m.condition}
+                                </span>
+                              </td>
+                              <td style={{ fontWeight: 800, color: "var(--primary)" }}>{m.qty} pcs</td>
+                              <td>{m.createdBy}</td>
+                              <td style={{ color: "var(--ink-soft)", fontSize: 12 }}>{formatDate(m.timestamp)}</td>
+                              {isAdmin && (
+                                <td>
+                                  <button className="aksi-btn hapus" title="Delete record" onClick={() => handleDeleteMovement(m)}>🗑️</button>
+                                </td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <PaginationBar
+                      currentPage={pageMovement}
+                      totalItems={filteredMovements.length}
+                      pageSize={pageSizeMovement}
+                      onPageChange={setPageMovement}
+                      onPageSizeChange={setPageSizeMovement}
+                    />
+                  </>
+                )}
+              </div>
+            </>
+          )}
+
+          {tab === "report" && (isReportUser || isAdmin) && (
+            <>
+              <div className="toolbar" style={{ marginBottom: "16px", justifyContent: "space-between", flexWrap: "wrap", gap: "12px" }}>
+                <div style={{ fontSize: "18px", fontWeight: "800", color: "var(--ink)" }}>
+                  📈 Daily Box Movement Report
+                </div>
+
+                <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <label style={{ fontSize: "13px", fontWeight: "700", color: "var(--ink-soft)" }}>From:</label>
+                    <input
+                      type="date"
+                      className="inline-select"
+                      value={reportStartDate}
+                      onChange={(e) => setReportStartDate(e.target.value)}
+                      style={{ fontSize: "13px", padding: "7px 10px", fontWeight: "700" }}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                    <label style={{ fontSize: "13px", fontWeight: "700", color: "var(--ink-soft)" }}>To:</label>
+                    <input
+                      type="date"
+                      className="inline-select"
+                      value={reportEndDate}
+                      onChange={(e) => setReportEndDate(e.target.value)}
+                      style={{ fontSize: "13px", padding: "7px 10px", fontWeight: "700" }}
+                    />
+                  </div>
+
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => {
+                      const today = getTodayString();
+                      setReportStartDate(today);
+                      setReportEndDate(today);
+                    }}
+                    style={{ padding: "7px 12px", fontSize: "12.5px" }}
+                  >
+                    📅 Today
+                  </button>
+                </div>
+              </div>
+
+              <div className="stat-strip" style={{ padding: 0, marginBottom: "20px" }}>
+                <div className="stat-chip">
+                  <div className="num" style={{ color: "var(--primary)" }}>{reportSummary.totalMovedToday}</div>
+                  <div className="lbl">
+                    Total Boxes Moved {reportSummary.startDate === reportSummary.endDate
+                      ? `(${formatDateLong(reportSummary.startDate)})`
+                      : `(${reportSummary.startDate} to ${reportSummary.endDate})`}
+                  </div>
+                </div>
+                <div className="stat-chip">
+                  <div className="num" style={{ color: "var(--terisi)" }}>{reportSummary.totalTransactions}</div>
+                  <div className="lbl">Total Movement Logs</div>
+                </div>
+              </div>
+
+              {/* 4 CARDS VIEW MATCHING IMAGE */}
+              <div className="report-grid-section">
+                
+                {/* 1. SUNDRY TO PROCESS */}
+                <div className="report-card-group">
+                  <div className="report-card-head">
+                    <div className="report-card-title">📦 Sundry to Process</div>
+                    <span className="report-card-total-badge">{reportSummary.totalSundry} box</span>
+                  </div>
+                  <div className="report-row-list">
+                    {reportSummary.groupSundry.map((item, idx) => (
+                      <div className="report-row-item" key={idx}>
+                        <span className="report-row-label">{item.label}</span>
+                        <span className="report-row-qty">{item.qty} box</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2. PAPER TO BB / GP3 */}
+                <div className="report-card-group">
+                  <div className="report-card-head">
+                    <div className="report-card-title">📜 Paper to BB / GP3</div>
+                    <span className="report-card-total-badge">{reportSummary.totalPaper} box</span>
+                  </div>
+                  <div className="report-row-list">
+                    {reportSummary.groupPaper.map((item, idx) => (
+                      <div className="report-row-item" key={idx}>
+                        <span className="report-row-label">{item.label}</span>
+                        <span className="report-row-qty">{item.qty} box</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 3. FILTER TO BB / GP3 */}
+                <div className="report-card-group">
+                  <div className="report-card-head">
+                    <div className="report-card-title">⚙️ Filter to BB / GP3</div>
+                    <span className="report-card-total-badge">{reportSummary.totalFilter} box</span>
+                  </div>
+                  <div className="report-row-list">
+                    {reportSummary.groupFilter.map((item, idx) => (
+                      <div className="report-row-item" key={idx}>
+                        <span className="report-row-label">{item.label}</span>
+                        <span className="report-row-qty">{item.qty} box</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 4. RETURN TO SUNDRY */}
+                <div className="report-card-group">
+                  <div className="report-card-head">
+                    <div className="report-card-title">↩️ Return to Sundry</div>
+                    <span className="report-card-total-badge">{reportSummary.totalReturn} box</span>
+                  </div>
+                  <div className="report-row-list">
+                    {reportSummary.groupReturn.map((item, idx) => (
+                      <div className="report-row-item" key={idx}>
+                        <span className="report-row-label">{item.label}</span>
+                        <span className="report-row-qty">{item.qty} box</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+            </>
+          )}
+
+          {tab === "master_balance" && isAdmin && (
+            <>
+              <div className="toolbar" style={{ marginBottom: "16px", justifyContent: "space-between" }}>
+                <div style={{ fontSize: "16px", fontWeight: "800", color: "var(--ink)" }}>
+                  💰 Initial Stock Balance Setup (per Box Type & Condition)
+                </div>
+
+                <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                  <label style={{ fontSize: "13px", fontWeight: "700", color: "var(--ink-soft)" }}>Select Location:</label>
+                  <select
+                    className="inline-select"
+                    value={selectedMasterLoc}
+                    onChange={(e) => setSelectedMasterLoc(e.target.value)}
+                    style={{ fontSize: "13.5px", padding: "8px 14px", fontWeight: "800" }}
+                  >
+                    {LOCATIONS.map((loc) => <option key={loc} value={loc}>📍 {loc}</option>)}
+                  </select>
+                  <button
+                    className="btn btn-primary"
+                    disabled={savingMasterBalance}
+                    onClick={() => saveAllInitialBalanceForLocation(selectedMasterLoc)}
+                  >
+                    💾 Save All for {selectedMasterLoc}
+                  </button>
+                </div>
+              </div>
+
+              <div className="card" style={{ padding: "20px" }}>
+                <div className="section-label">Initial Quantity for {selectedMasterLoc}</div>
+                <div style={{ fontSize: "13px", color: "var(--ink-soft)", marginBottom: "16px" }}>
+                  Set initial stock balances individually for each box type and condition (Filled and Empty).
+                </div>
+
+                {loadingBalance ? (
+                  <div className="empty-state"><div className="em">⏳</div>Loading balance data...</div>
+                ) : (
+                  <div className="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Box Type</th>
+                          <th>Initial Filled (Pcs)</th>
+                          <th>Initial Empty (Pcs)</th>
+                          <th>Current Available Stock (Filled / Empty)</th>
+                          <th>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {BOX_TYPES.map((bType) => {
+                          const filledKey = `${selectedMasterLoc}__${bType}__Filled`;
+                          const emptyKey = `${selectedMasterLoc}__${bType}__Empty`;
+
+                          const currFilled = getStock(selectedMasterLoc, bType, "Filled");
+                          const currEmpty = getStock(selectedMasterLoc, bType, "Empty");
+
+                          const inputFilled = masterBalanceInputs[filledKey] ?? (initialBalance[filledKey] || 0);
+                          const inputEmpty = masterBalanceInputs[emptyKey] ?? (initialBalance[emptyKey] || 0);
+
+                          return (
+                            <tr key={bType}>
+                              <td style={{ fontWeight: 800 }}>{bType}</td>
+                              <td style={{ width: "160px" }}>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  className="inline-select"
+                                  style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }}
+                                  value={inputFilled}
+                                  onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [filledKey]: e.target.value }))}
+                                />
+                              </td>
+                              <td style={{ width: "160px" }}>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  className="inline-select"
+                                  style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }}
+                                  value={inputEmpty}
+                                  onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [emptyKey]: e.target.value }))}
+                                />
+                              </td>
+                              <td>
+                                <span style={{ fontWeight: 800, color: "var(--terisi)" }}>{currFilled} Filled</span>
+                                <span style={{ color: "var(--ink-soft)", margin: "0 6px" }}>/</span>
+                                <span style={{ fontWeight: 800, color: "var(--kosong)" }}>{currEmpty} Empty</span>
+                              </td>
+                              <td>
+                                <button
+                                  className="btn btn-outline"
+                                  style={{ padding: "7px 14px", fontSize: "12px", fontWeight: "700" }}
+                                  onClick={() => saveInitialBalanceRow(selectedMasterLoc, bType)}
+                                >
+                                  💾 Save
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {tab === "master_capacity" && isAdmin && (
+            <>
+              <div className="toolbar" style={{ marginBottom: "16px" }}>
+                <div style={{ fontSize: "16px", fontWeight: "800", color: "var(--ink)" }}>
+                  🏬 Maximum Area Capacity Setup (Box Types 10 / 45 / 95)
+                </div>
+              </div>
+
+              <div className="card" style={{ padding: "20px" }}>
+                <div className="section-label">Set Maximum Holding Capacity Limit per Size (10, 45, 95)</div>
+                <div style={{ fontSize: "13px", color: "var(--ink-soft)", marginBottom: "16px" }}>
+                  Define capacity breakdown for Size 10, Size 45, and Size 95. Total Capacity is automatically calculated.
+                </div>
+
+                <div className="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Area / Location</th>
+                        <th style={{ width: "110px" }}>Cap (10)</th>
+                        <th style={{ width: "110px" }}>Cap (45)</th>
+                        <th style={{ width: "110px" }}>Cap (95)</th>
+                        <th>Total Capacity</th>
+                        <th>Current Boxes (10 / 45 / 95 / Total)</th>
+                        <th>Occupancy</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {locationStats.map((item) => {
+                        const loc = item.location;
+                        const capData = areaCapacity[loc] || {};
+
+                        const val10 = masterCapInputs[`${loc}__cap10`] !== undefined
+                          ? masterCapInputs[`${loc}__cap10`]
+                          : (capData.cap10 || 0);
+
+                        const val45 = masterCapInputs[`${loc}__cap45`] !== undefined
+                          ? masterCapInputs[`${loc}__cap45`]
+                          : (capData.cap45 || 0);
+
+                        const val95 = masterCapInputs[`${loc}__cap95`] !== undefined
+                          ? masterCapInputs[`${loc}__cap95`]
+                          : (capData.cap95 || 0);
+
+                        const calcTotalCap = Number(val10) + Number(val45) + Number(val95);
+                        const displayTotalCap = calcTotalCap > 0 ? calcTotalCap : item.maxCap;
+                        const pct = displayTotalCap > 0 ? Math.round((item.totalBoxes / displayTotalCap) * 100) : 0;
+
+                        return (
+                          <tr key={loc}>
+                            <td style={{ fontWeight: 800 }}>{loc}</td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                className="inline-select"
+                                style={{ width: "85px", fontSize: "13px", padding: "6px 8px", fontWeight: "700" }}
+                                value={val10}
+                                onChange={(e) => setMasterCapInputs((prev) => ({ ...prev, [`${loc}__cap10`]: e.target.value }))}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                className="inline-select"
+                                style={{ width: "85px", fontSize: "13px", padding: "6px 8px", fontWeight: "700" }}
+                                value={val45}
+                                onChange={(e) => setMasterCapInputs((prev) => ({ ...prev, [`${loc}__cap45`]: e.target.value }))}
+                              />
+                            </td>
+                            <td>
+                              <input
+                                type="number"
+                                min="0"
+                                className="inline-select"
+                                style={{ width: "85px", fontSize: "13px", padding: "6px 8px", fontWeight: "700" }}
+                                value={val95}
+                                onChange={(e) => setMasterCapInputs((prev) => ({ ...prev, [`${loc}__cap95`]: e.target.value }))}
+                              />
+                            </td>
+                            <td>
+                              <span style={{ fontWeight: 800, color: "var(--primary)" }}>{displayTotalCap} Boxes</span>
+                            </td>
+                            <td>
+                              <span style={{ fontWeight: 700 }}>{item.boxes10}</span>
+                              <span style={{ color: "var(--ink-soft)" }}> / </span>
+                              <span style={{ fontWeight: 700 }}>{item.boxes45}</span>
+                              <span style={{ color: "var(--ink-soft)" }}> / </span>
+                              <span style={{ fontWeight: 700 }}>{item.boxes95}</span>
+                              <span style={{ color: "var(--ink-soft)", fontWeight: 600 }}> ({item.totalBoxes} total)</span>
+                            </td>
+                            <td>
+                              <span className="badge" style={{
+                                background: pct >= 90 ? "var(--danger-tint)" : pct >= 70 ? "var(--kosong-tint)" : "var(--terisi-tint)",
+                                color: pct >= 90 ? "var(--danger)" : pct >= 70 ? "var(--kosong)" : "var(--terisi)"
+                              }}>
+                                {pct}% ({pct >= 90 ? "Full" : pct >= 70 ? "Near Full" : "Normal"})
+                              </span>
+                            </td>
+                            <td>
+                              <button
+                                className="btn btn-primary"
+                                style={{ padding: "7px 14px", fontSize: "12px" }}
+                                onClick={() => saveAreaCapacityRow(loc)}
+                              >
+                                💾 Save
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+
+          {tab === "history" && isAdmin && (
+            <>
+              <div className="toolbar" style={{ marginBottom: "16px" }}>
+                <div className="search-box">
+                  <span>🔍</span>
+                  <input placeholder="Search action, location, box type, or user..." value={searchHistory} onChange={(e) => { setSearchHistory(e.target.value); setPageHistory(1); }} />
+                </div>
+              </div>
+
+              <div className="card">
+                {(() => {
+                  const filteredHistory = history.filter((h) => {
+                    if (!searchHistory.trim()) return true;
+                    const q = searchHistory.trim().toLowerCase();
+                    return (
+                      (h.action || "").toLowerCase().includes(q) ||
+                      (h.createdBy || "").toLowerCase().includes(q) ||
+                      (h.details || "").toLowerCase().includes(q)
+                    );
+                  });
+
+                  const paginatedHistory = filteredHistory.slice((pageHistory - 1) * pageSizeHistory, pageHistory * pageSizeHistory);
+
+                  if (filteredHistory.length === 0) {
+                    return <div className="empty-state"><div className="em">📜</div>No historical activity recorded yet.</div>;
+                  }
+                  return (
+                    <>
+                      <div className="table-scroll">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Date & Time</th>
+                              <th>Action</th>
+                              <th>Details</th>
+                              <th>User</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {paginatedHistory.map((h) => (
+                              <tr key={h.id}>
+                                <td style={{ color: "var(--ink-soft)", fontSize: 12, whiteSpace: "nowrap" }}>{formatDate(h.timestamp)}</td>
+                                <td style={{ fontWeight: 800 }}>{h.action}</td>
+                                <td style={{ fontSize: 12.5, color: "var(--ink-soft)" }}>{h.details}</td>
+                                <td>{h.createdBy}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      <PaginationBar
+                        currentPage={pageHistory}
+                        totalItems={filteredHistory.length}
+                        pageSize={pageSizeHistory}
+                        onPageChange={setPageHistory}
+                        onPageSizeChange={setPageSizeHistory}
+                      />
+                    </>
+                  );
+                })()}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+
+      {/* MODAL 1: ADD MOVEMENT */}
+      {showAddMovement && (
+        <div className="modal-overlay" onClick={() => setShowAddMovement(false)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div className="modal-title">➕ Record Box Movement</div>
+              <button className="modal-close" onClick={() => setShowAddMovement(false)}>✕</button>
+            </div>
+
+            {movementError && <div className="error-box">{movementError}</div>}
+
+            <div className="row-2">
+              <div className="field">
+                <label>From Loc (Origin)</label>
+                <select
+                  value={movementForm.fromLoc}
+                  onChange={(e) => {
+                    const newFrom = e.target.value;
+                    setMovementForm((f) => ({
+                      ...f,
+                      fromLoc: newFrom,
+                      toLoc: f.toLoc === newFrom ? LOCATIONS.find((l) => l !== newFrom) : f.toLoc
+                    }));
+                    setMovementError("");
+                  }}
+                >
+                  {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+
+              <div className="field">
+                <label>To Loc (Destination)</label>
+                <select
+                  value={movementForm.toLoc}
+                  onChange={(e) => {
+                    setMovementForm((f) => ({ ...f, toLoc: e.target.value }));
+                    setMovementError("");
+                  }}
+                >
+                  {LOCATIONS.filter((l) => l !== movementForm.fromLoc).map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="row-2">
+              <div className="field">
+                <label>Box Type</label>
+                <select
+                  value={movementForm.boxType}
+                  onChange={(e) => {
+                    setMovementForm((f) => ({ ...f, boxType: e.target.value }));
+                    setMovementError("");
+                  }}
+                >
+                  {BOX_TYPES.map((b) => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </div>
+
+              <div className="field">
+                <label>Condition</label>
+                <select
+                  value={movementForm.condition}
+                  onChange={(e) => {
+                    setMovementForm((f) => ({ ...f, condition: e.target.value }));
+                    setMovementError("");
+                  }}
+                >
+                  <option value="Filled">Filled</option>
+                  <option value="Empty">Empty</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="info-stat-box">
+              <span style={{ color: "var(--ink-soft)", fontWeight: 700 }}>
+                Available Stock ({movementForm.condition}) of <b>{movementForm.boxType}</b> at <b>{movementForm.fromLoc}</b>:
+              </span>
+              <span style={{ fontWeight: 800, color: currentAddMovStock > 0 ? "var(--primary)" : "var(--danger)", fontSize: "15px" }}>
+                {currentAddMovStock} pcs
+              </span>
+            </div>
+
+            <div className="field">
+              <label>Quantity (Pcs)</label>
+              <input
+                type="number"
+                min="1"
+                value={movementForm.qty}
+                onChange={(e) => {
+                  setMovementForm((f) => ({ ...f, qty: e.target.value }));
+                  setMovementError("");
+                }}
+              />
+            </div>
+
+            <button
+              className="btn btn-primary"
+              style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
+              disabled={savingMovement}
+              onClick={handleAddMovement}
+            >
+              {savingMovement ? "Saving..." : "💾 Save Box Movement"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: UPDATE MOVEMENT */}
+      {showUpdateMovement && (
+        <div className="modal-overlay" onClick={() => setShowUpdateMovement(false)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div className="modal-title">🔄 Update Movement</div>
+              <button className="modal-close" onClick={() => setShowUpdateMovement(false)}>✕</button>
+            </div>
+
+            {updateMovError && <div className="error-box">{updateMovError}</div>}
+
+            <div className="row-3">
+              <div className="field">
+                <label>Box Type</label>
+                <select
+                  value={updateMovForm.boxType}
+                  onChange={(e) => {
+                    setUpdateMovForm((f) => ({ ...f, boxType: e.target.value }));
+                    setUpdateMovError("");
+                  }}
+                >
+                  {BOX_TYPES.map((b) => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </div>
+
+              <div className="field">
+                <label>From Loc</label>
+                <select
+                  value={updateMovForm.fromLoc}
+                  onChange={(e) => {
+                    const newFrom = e.target.value;
+                    setUpdateMovForm((f) => ({
+                      ...f,
+                      fromLoc: newFrom,
+                      toLoc: f.toLoc === newFrom ? LOCATIONS.find((l) => l !== newFrom) : f.toLoc
+                    }));
+                    setUpdateMovError("");
+                  }}
+                >
+                  {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+
+              <div className="field">
+                <label>To Loc</label>
+                <select
+                  value={updateMovForm.toLoc}
+                  onChange={(e) => {
+                    setUpdateMovForm((f) => ({ ...f, toLoc: e.target.value }));
+                    setUpdateMovError("");
+                  }}
+                >
+                  {LOCATIONS.filter((l) => l !== updateMovForm.fromLoc).map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="row-2">
+              <div className="field">
+                <label>Condition</label>
+                <select
+                  value={updateMovForm.condition}
+                  onChange={(e) => {
+                    setUpdateMovForm((f) => ({ ...f, condition: e.target.value }));
+                    setUpdateMovError("");
+                  }}
+                >
+                  <option value="Filled">Filled</option>
+                  <option value="Empty">Empty</option>
+                </select>
+              </div>
+
+              <div className="field">
+                <label>Quantity (Pcs)</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={updateMovForm.qty}
+                  onChange={(e) => {
+                    setUpdateMovForm((f) => ({ ...f, qty: e.target.value }));
+                    setUpdateMovError("");
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="info-stat-box">
+              <span style={{ color: "var(--ink-soft)", fontWeight: 700 }}>
+                Available Stock ({updateMovForm.condition}) of <b>{updateMovForm.boxType}</b> at <b>{updateMovForm.fromLoc}</b>:
+              </span>
+              <span style={{ fontWeight: 800, color: currentUpdateMovStock > 0 ? "var(--primary)" : "var(--danger)", fontSize: "15px" }}>
+                {currentUpdateMovStock} pcs
+              </span>
+            </div>
+
+            <button
+              className="btn btn-primary"
+              style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
+              disabled={savingUpdateMov}
+              onClick={handleUpdateMovement}
+            >
+              {savingUpdateMov ? "Saving..." : "💾 Save Movement Update"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: UPDATE CONDITION */}
+      {showUpdateCondition && (
+        <div className="modal-overlay" onClick={() => setShowUpdateCondition(false)}>
+          <div className="modal-box" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <div className="modal-title">🏷️ Update Condition</div>
+              <button className="modal-close" onClick={() => setShowUpdateCondition(false)}>✕</button>
+            </div>
+
+            {conditionError && <div className="error-box">{conditionError}</div>}
+
+            <div className="row-2">
+              <div className="field">
+                <label>Location</label>
+                <select
+                  value={conditionForm.location}
+                  onChange={(e) => {
+                    setConditionForm((f) => ({ ...f, location: e.target.value }));
+                    setConditionError("");
+                  }}
+                >
+                  {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+
+              <div className="field">
+                <label>Box Type</label>
+                <select
+                  value={conditionForm.boxType}
+                  onChange={(e) => {
+                    setConditionForm((f) => ({ ...f, boxType: e.target.value }));
+                    setConditionError("");
+                  }}
+                >
+                  {BOX_TYPES.map((b) => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div className="row-2">
+              <div className="field">
+                <label>Previous Condition</label>
+                <select
+                  value={conditionForm.prevCondition}
+                  onChange={(e) => {
+                    const next = e.target.value === "Filled" ? "Empty" : "Filled";
+                    setConditionForm((f) => ({ ...f, prevCondition: e.target.value, nextCondition: next }));
+                    setConditionError("");
+                  }}
+                >
+                  <option value="Filled">Filled</option>
+                  <option value="Empty">Empty</option>
+                </select>
+              </div>
+
+              <div className="field">
+                <label>Next Condition</label>
+                <select
+                  value={conditionForm.nextCondition}
+                  onChange={(e) => {
+                    setConditionForm((f) => ({ ...f, nextCondition: e.target.value }));
+                    setConditionError("");
+                  }}
+                >
+                  <option value="Empty">Empty</option>
+                  <option value="Filled">Filled</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="info-stat-box">
+              <span style={{ color: "var(--ink-soft)", fontWeight: 700 }}>
+                Available Stock ({conditionForm.prevCondition}) of <b>{conditionForm.boxType}</b> at <b>{conditionForm.location}</b>:
+              </span>
+              <span style={{ fontWeight: 800, color: currentConditionStock > 0 ? "var(--primary)" : "var(--danger)", fontSize: "15px" }}>
+                {currentConditionStock} pcs
+              </span>
+            </div>
+
+            <div className="field">
+              <label>Quantity to Update (Pcs)</label>
+              <input
+                type="number"
+                min="1"
+                value={conditionForm.qty}
+                onChange={(e) => {
+                  setConditionForm((f) => ({ ...f, qty: e.target.value }));
+                  setConditionError("");
+                }}
+              />
+            </div>
+
+            <button
+              className="btn btn-primary"
+              style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
+              disabled={savingCondition}
+              onClick={handleUpdateCondition}
+            >
+              {savingCondition ? "Saving..." : "💾 Save Condition Update"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
