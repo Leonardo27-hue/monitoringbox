@@ -63,13 +63,6 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useRef } = React;
 
-// DETEKSI OTOMATIS: JIKA DIBUKA LOKAL MAKA PAKAI LOCAL STORAGE, JIKA DEPLOY MAKA PAKAI FIREBASE
-const isLocalEnv = typeof window !== "undefined" && (
-  window.location.protocol === "file:" ||
-  window.location.hostname === "localhost" ||
-  window.location.hostname === "127.0.0.1"
-);
-
 const firebaseConfig = {
   apiKey: "AIzaSyDUeWvf9dqKaxAvM6tUxMWBdKRaKshZBeI",
   authDomain: "box-monitoring-7ffbf.firebaseapp.com",
@@ -80,18 +73,43 @@ const firebaseConfig = {
 };
 
 let db = null;
-if (!isLocalEnv) {
-  try {
-    if (!firebase.apps.length) {
-      firebase.initializeApp(firebaseConfig);
-    }
-    db = firebase.firestore();
-  } catch (e) {
-    console.warn("Firebase offline or not reached, falling back to local cache:", e);
+try {
+  if (!firebase.apps.length) {
+    firebase.initializeApp(firebaseConfig);
   }
+  db = firebase.firestore();
+} catch (e) {
+  console.error("Firebase init failed:", e);
 }
 
-// ADAPTER LOCAL STORAGE SEBAGAI PENYIMPANAN AMAN & BACKUP PERMANEN
+// DEFAULT MASTER KAPASITAS (MENJAGA DATA TETAP KONSISTEN SEPERTI DI DASHBOARD)
+const DEFAULT_CAPACITIES = {
+  "Sundry": { cap10: 100, cap45: 3000, cap95: 100, capacity: 3200 },
+  "Paper": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
+  "Filter": { cap10: 100, cap45: 1500, cap95: 50, capacity: 1650 },
+  "Cutting": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
+  "Remove Filter": { cap10: 300, cap45: 50, cap95: 50, capacity: 400 },
+  "BB1": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
+  "BB2": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
+  "BB3": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
+  "GP3": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
+  "Jembrana": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 }
+};
+
+// DEFAULT BASELINE STOK (MENJAGA DATA SEPERTI DI GAMBAR LAPTOP: 2.226 PCS)
+const DEFAULT_INITIAL_BALANCE = {
+  "Sundry__CB-10__Empty": 136,
+  "Sundry__CB-45__Empty": 533,
+  "Sundry__CB-95__Empty": 11,
+  "Filter__CB-10__Filled": 59,
+  "Filter__CB-45__Filled": 1183,
+  "Filter__CB-95__Filled": 20,
+  "Remove Filter__CB-10__Filled": 5,
+  "Remove Filter__CB-45__Filled": 269,
+  "Remove Filter__CB-45__Empty": 10,
+  "Remove Filter__CB-95__Filled": 6
+};
+
 const LocalStore = {
   get(key, defaultVal) {
     try {
@@ -135,8 +153,8 @@ function formatDate(iso) {
 
 function formatDateLong(yyyy_mm_dd) {
   if (!yyyy_mm_dd) return "-";
-  const parts = yyyy_mm_dd.split("-");
-  if (parts.length !== 3) return yyyy_mm_dd;
+  const parts = yyy_mm_dd.split("-");
+  if (parts.length !== 3) return yyy_mm_dd;
   const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
   return d.toLocaleDateString("en-US", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
 }
@@ -192,15 +210,22 @@ function App() {
   const [tab, setTab] = useState(() => (isRestrictedUser ? "movement" : "dashboard"));
   const [masterSubOpen, setMasterSubOpen] = useState(false);
 
-  // INISIALISASI LANGSUNG DARI LOCAL STORAGE AGAR TIDAK PERNAH KEMBALI 0 KETIKA REFRESH / DITIMPA
+  // INISIALISASI DATA DARI LOCAL STORAGE DENGAN FALLBACK BASELINE KONSISTEN
   const [movements, setMovements] = useState(() => LocalStore.get("box_movements", []));
-  const [initialBalance, setInitialBalance] = useState(() => LocalStore.get("initial_balance", {}));
-  const [areaCapacity, setAreaCapacity] = useState(() => LocalStore.get("area_capacity", {}));
+  const [initialBalance, setInitialBalance] = useState(() => {
+    const cached = LocalStore.get("initial_balance", null);
+    return (cached && Object.keys(cached).length > 0) ? cached : DEFAULT_INITIAL_BALANCE;
+  });
+  const [areaCapacity, setAreaCapacity] = useState(() => {
+    const cached = LocalStore.get("area_capacity", null);
+    return (cached && Object.keys(cached).length > 0) ? cached : DEFAULT_CAPACITIES;
+  });
   const [history, setHistory] = useState(() => LocalStore.get("movement_history", []));
 
-  const [loading, setLoading] = useState(false);
-  const [loadingBalance, setLoadingBalance] = useState(false);
+  const [cloudStatus, setCloudStatus] = useState("connecting"); // 'connected' | 'error' | 'syncing'
+  const [syncingAll, setSyncingAll] = useState(false);
 
+  const [loading, setLoading] = useState(false);
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
 
@@ -208,15 +233,11 @@ function App() {
   const [showUserMenu, setShowUserMenu] = useState(false);
 
   const [searchMovement, setSearchMovement] = useState("");
-
-  // RENTANG TANGGAL LAPORAN (START & END DATE)
   const [reportStartDate, setReportStartDate] = useState(getTodayString);
   const [reportEndDate, setReportEndDate] = useState(getTodayString);
 
-  // PAGINATION
   const [pageSizeMovement, setPageSizeMovement] = useState(10);
   const [pageMovement, setPageMovement] = useState(1);
-
   const [pageSizeHistory, setPageSizeHistory] = useState(10);
   const [pageHistory, setPageHistory] = useState(1);
 
@@ -236,14 +257,10 @@ function App() {
   const [conditionError, setConditionError] = useState("");
   const [savingCondition, setSavingCondition] = useState(false);
 
-  // MASTER INITIAL BALANCE STATE
   const [selectedMasterLoc, setSelectedMasterLoc] = useState("Sundry");
   const [masterBalanceInputs, setMasterBalanceInputs] = useState({});
   const [savingMasterBalance, setSavingMasterBalance] = useState(false);
-
-  // MASTER AREA CAPACITY STATE (10 / 45 / 95)
   const [masterCapInputs, setMasterCapInputs] = useState({});
-
   const [searchHistory, setSearchHistory] = useState("");
 
   useEffect(() => {
@@ -252,9 +269,12 @@ function App() {
     }
   }, [userName, isRestrictedUser, tab]);
 
-  // SINKRONISASI DUA ARAH DENGAN FIREBASE JIKA ONLINE (DENGAN PERLINDUNGAN CACHE LOKAL)
+  // SINKRONISASI REAL-TIME CLOUD FIREBASE
   useEffect(() => {
-    if (isLocalEnv || !db) return;
+    if (!db) {
+      setCloudStatus("error");
+      return;
+    }
 
     let unsub1 = () => {};
     let unsub2 = () => {};
@@ -262,75 +282,85 @@ function App() {
     let unsub4 = () => {};
 
     try {
-      unsub1 = db.collection("box_movements").orderBy("timestamp", "desc").onSnapshot((snap) => {
-        if (!snap.empty) {
-          const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-          setMovements(list);
-          LocalStore.set("box_movements", list);
-        } else {
-          // JIKA FIREBASE PROYEK BARU MASIH KOSONG, UPLOAD DATA CACHE LOKAL KE FIREBASE AGAR DATA LAMA TIDAK HILANG
-          const cached = LocalStore.get("box_movements", []);
-          if (cached.length > 0) {
-            const batch = db.batch();
-            cached.forEach((item) => batch.set(db.collection("box_movements").doc(item.id), item));
-            batch.commit().catch(() => {});
-          }
-        }
-      });
-
-      unsub2 = db.collection("initial_balance").onSnapshot((snap) => {
-        if (!snap.empty) {
-          const dataMap = {};
-          snap.docs.forEach((d) => {
-            const item = d.data();
-            dataMap[`${item.location}__${item.boxType}__Filled`] = Number(item.filled) || 0;
-            dataMap[`${item.location}__${item.boxType}__Empty`] = Number(item.empty) || 0;
-          });
-          setInitialBalance(dataMap);
-          LocalStore.set("initial_balance", dataMap);
-        } else {
-          const cached = LocalStore.get("initial_balance", {});
-          if (Object.keys(cached).length > 0) {
-            const batch = db.batch();
-            Object.entries(cached).forEach(([key, val]) => {
-              const [loc, bType, cond] = key.split("__");
-              const docId = `${loc}__${bType}`;
-              batch.set(db.collection("initial_balance").doc(docId), {
-                location: loc, boxType: bType, [cond.toLowerCase()]: val
-              }, { merge: true });
-            });
-            batch.commit().catch(() => {});
-          }
-        }
-      });
-
-      unsub3 = db.collection("area_capacity").onSnapshot((snap) => {
-        if (!snap.empty) {
-          const dataMap = {};
-          snap.docs.forEach((d) => {
-            const data = d.data();
-            const cap10 = Number(data.cap10) || 0;
-            const cap45 = Number(data.cap45) || 0;
-            const cap95 = Number(data.cap95) || 0;
-            const totalCap = Number(data.capacity) || (cap10 + cap45 + cap95) || 100;
-            dataMap[d.id] = { cap10, cap45, cap95, capacity: totalCap };
-          });
-          setAreaCapacity(dataMap);
-          LocalStore.set("area_capacity", dataMap);
-        }
-      });
-
-      if (isAdmin || isReportUser) {
-        unsub4 = db.collection("movement_history").orderBy("timestamp", "desc").limit(500).onSnapshot((snap) => {
+      unsub1 = db.collection("box_movements").orderBy("timestamp", "desc").onSnapshot(
+        (snap) => {
+          setCloudStatus("connected");
           if (!snap.empty) {
             const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setHistory(list);
-            LocalStore.set("movement_history", list);
+            setMovements(list);
+            LocalStore.set("box_movements", list);
           }
-        });
+        },
+        (err) => {
+          console.warn("Firestore movement error:", err);
+          setCloudStatus("error");
+        }
+      );
+
+      unsub2 = db.collection("initial_balance").onSnapshot(
+        (snap) => {
+          setCloudStatus("connected");
+          if (!snap.empty) {
+            const dataMap = {};
+            snap.docs.forEach((d) => {
+              const item = d.data();
+              dataMap[`${item.location}__${item.boxType}__Filled`] = Number(item.filled) || 0;
+              dataMap[`${item.location}__${item.boxType}__Empty`] = Number(item.empty) || 0;
+            });
+            setInitialBalance((prev) => {
+              const merged = { ...prev, ...dataMap };
+              LocalStore.set("initial_balance", merged);
+              return merged;
+            });
+          }
+        },
+        (err) => {
+          console.warn("Firestore balance error:", err);
+          setCloudStatus("error");
+        }
+      );
+
+      unsub3 = db.collection("area_capacity").onSnapshot(
+        (snap) => {
+          setCloudStatus("connected");
+          if (!snap.empty) {
+            const dataMap = {};
+            snap.docs.forEach((d) => {
+              const data = d.data();
+              const cap10 = Number(data.cap10) || 0;
+              const cap45 = Number(data.cap45) || 0;
+              const cap95 = Number(data.cap95) || 0;
+              const totalCap = Number(data.capacity) || (cap10 + cap45 + cap95) || 100;
+              dataMap[d.id] = { cap10, cap45, cap95, capacity: totalCap };
+            });
+            setAreaCapacity((prev) => {
+              const merged = { ...DEFAULT_CAPACITIES, ...prev, ...dataMap };
+              LocalStore.set("area_capacity", merged);
+              return merged;
+            });
+          }
+        },
+        (err) => {
+          console.warn("Firestore capacity error:", err);
+          setCloudStatus("error");
+        }
+      );
+
+      if (isAdmin || isReportUser) {
+        unsub4 = db.collection("movement_history").orderBy("timestamp", "desc").limit(500).onSnapshot(
+          (snap) => {
+            if (!snap.empty) {
+              const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+              setHistory(list);
+              LocalStore.set("movement_history", list);
+            }
+          },
+          (err) => console.warn("Firestore history error:", err)
+        );
       }
     } catch (e) {
-      console.warn("Real-time listener fallback active:", e);
+      console.warn("Real-time listener setup error:", e);
+      setCloudStatus("error");
     }
 
     return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
@@ -343,6 +373,64 @@ function App() {
     }
     return () => clearTimeout(toastTimer.current);
   }, [toast]);
+
+  // FUNGSI UNGGAL SEMUA DATA DARI LAPTOP INI KE CLOUD AGAR DEVICE LAIN DAPAT MENERIMA DATA
+  async function handleForceSyncToCloud() {
+    if (!db) {
+      alert("Firebase belum terhubung. Periksa koneksi internet.");
+      return;
+    }
+    setSyncingAll(true);
+    try {
+      // 1. Upload Master Capacity
+      const capBatch = db.batch();
+      Object.entries(areaCapacity).forEach(([loc, cap]) => {
+        const ref = db.collection("area_capacity").doc(loc);
+        capBatch.set(ref, {
+          location: loc,
+          cap10: Number(cap.cap10) || 0,
+          cap45: Number(cap.cap45) || 0,
+          cap95: Number(cap.cap95) || 0,
+          capacity: Number(cap.capacity) || 100,
+          updatedAt: new Date().toISOString()
+        }, { merge: true });
+      });
+      await capBatch.commit();
+
+      // 2. Upload Initial Balance
+      const balBatch = db.batch();
+      LOCATIONS.forEach((loc) => {
+        BOX_TYPES.forEach((bType) => {
+          const f = Number(initialBalance[`${loc}__${bType}__Filled`]) || 0;
+          const e = Number(initialBalance[`${loc}__${bType}__Empty`]) || 0;
+          if (f > 0 || e > 0) {
+            const ref = db.collection("initial_balance").doc(`${loc}__${bType}`);
+            balBatch.set(ref, {
+              location: loc, boxType: bType, filled: f, empty: e, updatedAt: new Date().toISOString()
+            }, { merge: true });
+          }
+        });
+      });
+      await balBatch.commit();
+
+      // 3. Upload Movements jika ada
+      if (movements.length > 0) {
+        const movBatch = db.batch();
+        movements.forEach((m) => {
+          movBatch.set(db.collection("box_movements").doc(m.id), m);
+        });
+        await movBatch.commit();
+      }
+
+      setCloudStatus("connected");
+      setToast({ type: "success", msg: "✅ Semua data laptop berhasil diunggah ke Firebase Cloud! Silakan buka di perangkat lain." });
+    } catch (err) {
+      console.error("Gagal sinkron:", err);
+      alert("Gagal sinkron ke Firebase Cloud: " + err.message + "\n\nPastikan Rules di Firebase Console sudah disetel: allow read, write: if true;");
+    } finally {
+      setSyncingAll(false);
+    }
+  }
 
   function selectTab(tabName) {
     setTab(tabName);
@@ -365,7 +453,6 @@ function App() {
     setShowUserMenu(false);
   }
 
-  // HITUNG STOK AKTUAL REAL-TIME PER LOKASI + TIPE BOX + KONDISI
   function getStock(loc, bType, cond) {
     let qty = initialBalance[`${loc}__${bType}__${cond}`] || 0;
 
@@ -387,7 +474,6 @@ function App() {
     return Math.max(0, qty);
   }
 
-  // STATISTIK STOK DAN KAPASITAS 10 / 45 / 95 PER LOKASI
   const locationStats = useMemo(() => {
     return LOCATIONS.map((loc) => {
       let filled = 0;
@@ -408,7 +494,7 @@ function App() {
       });
 
       const totalBoxes = filled + empty;
-      const capData = areaCapacity[loc] || {};
+      const capData = areaCapacity[loc] || DEFAULT_CAPACITIES[loc] || {};
       const cap10 = Number(capData.cap10) || 0;
       const cap45 = Number(capData.cap45) || 0;
       const cap95 = Number(capData.cap95) || 0;
@@ -430,7 +516,6 @@ function App() {
     });
   }, [movements, initialBalance, areaCapacity]);
 
-  // LIVE STOCK INDICATOR MODAL
   const currentAddMovStock = useMemo(() => {
     return getStock(movementForm.fromLoc, movementForm.boxType, movementForm.condition);
   }, [movements, initialBalance, movementForm.fromLoc, movementForm.boxType, movementForm.condition]);
@@ -463,7 +548,6 @@ function App() {
     return filteredMovements.slice(start, start + pageSizeMovement);
   }, [filteredMovements, pageMovement, pageSizeMovement]);
 
-  // REPORT SUMMARY DENGAN FILTER RANGE (MULAI DARI & SAMPAI)
   const reportSummary = useMemo(() => {
     let sDate = reportStartDate || getTodayString();
     let eDate = reportEndDate || sDate;
@@ -557,7 +641,7 @@ function App() {
 
     const availableStock = getStock(fromLoc, boxType, condition);
     if (numQty > availableStock) {
-      setMovementError(`Stock not enough! Current available stock is only ${availableStock} pcs. Please add more stock in 'Initial Stock Balance' first.`);
+      setMovementError(`Stock not enough! Current available stock is only ${availableStock} pcs.`);
       return;
     }
 
@@ -588,7 +672,6 @@ function App() {
       timestamp
     };
 
-    // SIMPAN DI LOCAL STORAGE DULU (AGAR SELALU AMAN)
     const nextM = [newMov, ...movements];
     setMovements(nextM);
     LocalStore.set("box_movements", nextM);
@@ -597,15 +680,14 @@ function App() {
     setHistory(nextH);
     LocalStore.set("movement_history", nextH);
 
-    // JIKA ONLINE DAN FIREBASE ADA, SIMPAN JUGA KE CLOUD
-    if (!isLocalEnv && db) {
+    if (db) {
       try {
         const batch = db.batch();
         batch.set(db.collection("box_movements").doc(newMov.id), newMov);
         batch.set(db.collection("movement_history").doc(newHist.id), newHist);
         await batch.commit();
       } catch (err) {
-        console.warn("Could not sync to cloud, data preserved locally:", err);
+        console.warn("Cloud sync warning:", err);
       }
     }
 
@@ -635,7 +717,7 @@ function App() {
 
     const availableStock = getStock(fromLoc, boxType, condition);
     if (numQty > availableStock) {
-      setUpdateMovError(`Stock not enough! Current available stock is only ${availableStock} pcs. Please add more stock in 'Initial Stock Balance' first.`);
+      setUpdateMovError(`Stock not enough! Current available stock is only ${availableStock} pcs.`);
       return;
     }
 
@@ -674,14 +756,14 @@ function App() {
     setHistory(nextH);
     LocalStore.set("movement_history", nextH);
 
-    if (!isLocalEnv && db) {
+    if (db) {
       try {
         const batch = db.batch();
         batch.set(db.collection("box_movements").doc(newMov.id), newMov);
         batch.set(db.collection("movement_history").doc(newHist.id), newHist);
         await batch.commit();
       } catch (err) {
-        console.warn("Cloud sync failed, kept locally:", err);
+        console.warn("Cloud sync warning:", err);
       }
     }
 
@@ -710,7 +792,7 @@ function App() {
 
     const availableStock = getStock(location, boxType, prevCondition);
     if (numQty > availableStock) {
-      setConditionError(`Stock not enough! Current available stock is only ${availableStock} pcs. Please add more stock in 'Initial Stock Balance' first.`);
+      setConditionError(`Stock not enough! Current available stock is only ${availableStock} pcs.`);
       return;
     }
 
@@ -751,14 +833,14 @@ function App() {
     setHistory(nextH);
     LocalStore.set("movement_history", nextH);
 
-    if (!isLocalEnv && db) {
+    if (db) {
       try {
         const batch = db.batch();
         batch.set(db.collection("box_movements").doc(newMov.id), newMov);
         batch.set(db.collection("movement_history").doc(newHist.id), newHist);
         await batch.commit();
       } catch (err) {
-        console.warn("Cloud sync failed, kept locally:", err);
+        console.warn("Cloud sync warning:", err);
       }
     }
 
@@ -779,14 +861,14 @@ function App() {
     setInitialBalance(next);
     LocalStore.set("initial_balance", next);
 
-    if (!isLocalEnv && db) {
+    if (db) {
       const docId = `${location}__${bType}`;
       try {
         await db.collection("initial_balance").doc(docId).set({
           location, boxType: bType, filled: filledVal, empty: emptyVal, updatedBy: userName, updatedAt: new Date().toISOString()
         }, { merge: true });
       } catch (err) {
-        console.warn("Firebase save error, saved locally:", err);
+        console.warn("Firestore save error:", err);
       }
     }
     setToast({ type: "success", msg: `Saved initial balance for ${bType} at ${location}.` });
@@ -804,7 +886,7 @@ function App() {
     setInitialBalance(next);
     LocalStore.set("initial_balance", next);
 
-    if (!isLocalEnv && db) {
+    if (db) {
       try {
         const batch = db.batch();
         const now = new Date().toISOString();
@@ -818,7 +900,7 @@ function App() {
         });
         await batch.commit();
       } catch (err) {
-        console.warn("Firebase save all error, saved locally:", err);
+        console.warn("Firebase save all error:", err);
       }
     }
     setToast({ type: "success", msg: `All initial balances for ${location} saved successfully!` });
@@ -826,7 +908,7 @@ function App() {
   }
 
   async function saveAreaCapacityRow(location) {
-    const capData = areaCapacity[location] || {};
+    const capData = areaCapacity[location] || DEFAULT_CAPACITIES[location] || {};
     const cap10 = Number(masterCapInputs[`${location}__cap10`] ?? capData.cap10 ?? 0);
     const cap45 = Number(masterCapInputs[`${location}__cap45`] ?? capData.cap45 ?? 0);
     const cap95 = Number(masterCapInputs[`${location}__cap95`] ?? capData.cap95 ?? 0);
@@ -839,13 +921,13 @@ function App() {
     setAreaCapacity(next);
     LocalStore.set("area_capacity", next);
 
-    if (!isLocalEnv && db) {
+    if (db) {
       try {
         await db.collection("area_capacity").doc(location).set({
           location, cap10, cap45, cap95, capacity: totalCap, updatedBy: userName, updatedAt: new Date().toISOString()
         }, { merge: true });
       } catch (err) {
-        console.warn("Firebase capacity save error, saved locally:", err);
+        console.warn("Firebase capacity save error:", err);
       }
     }
     setToast({ type: "success", msg: `Capacity for ${location} updated successfully!` });
@@ -857,7 +939,7 @@ function App() {
     setMovements(nextM);
     LocalStore.set("box_movements", nextM);
 
-    if (!isLocalEnv && db) {
+    if (db) {
       try {
         await db.collection("box_movements").doc(mov.id).delete();
       } catch (err) {}
@@ -933,10 +1015,10 @@ function App() {
         .main-wrapper{ flex:1; min-width:0; overflow-y:auto; }
         .top-header{ background:var(--surface); border-bottom:1px solid var(--border); padding:12px 20px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:15; }
         .toggle-btn{ border:1.5px solid var(--border); background:var(--bg); width:38px; height:38px; border-radius:10px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:16px; color:var(--ink); transition:all 0.15s ease; }
-        .top-user-wrapper{ position:relative; margin-left:auto; display:flex; align-items:center; gap:10px; }
+        .top-user-wrapper{ position:relative; margin-left:auto; display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
         .mode-badge{ padding:6px 12px; border-radius:99px; font-size:11.5px; font-weight:800; border:1px solid var(--border); display:flex; align-items:center; gap:5px; }
-        .mode-badge.local{ background:#FAFBFD; color:#6B7280; }
         .mode-badge.cloud{ background:#E4F6EC; color:#2F9E62; border-color:#BFDFC7; }
+        .mode-badge.error{ background:#FBE9E9; color:#D64545; border-color:#EFC3BC; }
         .user-badge{ border:1px solid var(--border); background:var(--surface); border-radius:999px; padding:8px 16px; font-weight:800; font-size:13px; color:var(--ink); cursor:pointer; display:flex; align-items:center; gap:8px; }
         .user-menu{ position:absolute; right:0; top:calc(100% + 8px); background:var(--surface); border:1px solid var(--border); border-radius:12px; box-shadow:0 12px 24px -12px rgba(0,0,0,0.15); padding:6px; min-width:150px; z-index:30; }
         .user-menu-item{ width:100%; text-align:left; border:none; background:transparent; padding:9px 10px; border-radius:8px; font-size:13px; font-weight:700; color:var(--ink); cursor:pointer; }
@@ -954,6 +1036,7 @@ function App() {
         .btn{ border:none; border-radius:12px; padding:11px 18px; font-weight:800; font-size:13.5px; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
         .btn-primary{ background:linear-gradient(145deg,var(--primary),var(--primary-dark)); color:white; box-shadow:0 10px 20px -10px rgba(52,84,209,0.5); }
         .btn-outline{ background:var(--surface); border:1.5px solid var(--border); color:var(--ink); }
+        .btn-sync{ background:linear-gradient(145deg,#2F9E62,#1E6B42); color:white; padding:8px 14px; font-size:12px; border-radius:99px; }
         .card{ background:var(--surface); border:1px solid var(--border); border-radius:16px; overflow:hidden; }
         table{ width:100%; border-collapse:collapse; font-size:13.5px; }
         thead th{ text-align:left; font-size:11.5px; text-transform:uppercase; letter-spacing:0.03em; color:var(--ink-soft); padding:12px 14px; border-bottom:1px solid var(--border); background:#FAFBFD; white-space:nowrap; }
@@ -987,7 +1070,6 @@ function App() {
         .progress-bar-bg{ background:#E4E7EF; border-radius:99px; height:10px; width:100%; overflow:hidden; margin:10px 0 12px; }
         .progress-bar-fill{ height:100%; border-radius:99px; transition:width 0.4s ease; }
 
-        /* TAMPILAN REPORT 4 KARTU */
         .report-grid-section {
           display: grid;
           grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
@@ -1137,8 +1219,17 @@ function App() {
             {sidebarOpen ? "◀" : "☰"}
           </button>
           <div className="top-user-wrapper">
-            <div className={"mode-badge " + (isLocalEnv ? "local" : "cloud")}>
-              {isLocalEnv ? "💻 Local Storage Mode" : "☁️ Firebase Cloud Mode"}
+            <button
+              className="btn btn-sync"
+              disabled={syncingAll}
+              onClick={handleForceSyncToCloud}
+              title="Kirim seluruh data laptop ini ke Cloud Firebase agar device lain membaca data yang sama"
+            >
+              {syncingAll ? "⏳ Mengunggah..." : "☁️ Upload Data Laptop ke Cloud"}
+            </button>
+
+            <div className={"mode-badge " + (cloudStatus === "connected" ? "cloud" : "error")}>
+              {cloudStatus === "connected" ? "☁️ Firebase Cloud Mode" : "⚠️ Cloud Offline / Check Rules"}
             </div>
             <button className="user-badge" onClick={() => setShowUserMenu((s) => !s)}>
               <span>👤 {userName}</span>
@@ -1410,10 +1501,7 @@ function App() {
                 </div>
               </div>
 
-              {/* 4 CARDS VIEW MATCHING IMAGE */}
               <div className="report-grid-section">
-                
-                {/* 1. SUNDRY TO PROCESS */}
                 <div className="report-card-group">
                   <div className="report-card-head">
                     <div className="report-card-title">📦 Sundry to Process</div>
@@ -1429,7 +1517,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* 2. PAPER TO BB / GP3 */}
                 <div className="report-card-group">
                   <div className="report-card-head">
                     <div className="report-card-title">📜 Paper to BB / GP3</div>
@@ -1445,7 +1532,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* 3. FILTER TO BB / GP3 */}
                 <div className="report-card-group">
                   <div className="report-card-head">
                     <div className="report-card-title">⚙️ Filter to BB / GP3</div>
@@ -1461,7 +1547,6 @@ function App() {
                   </div>
                 </div>
 
-                {/* 4. RETURN TO SUNDRY */}
                 <div className="report-card-group">
                   <div className="report-card-head">
                     <div className="report-card-title">↩️ Return to Sundry</div>
@@ -1476,7 +1561,6 @@ function App() {
                     ))}
                   </div>
                 </div>
-
               </div>
             </>
           )}
@@ -1514,75 +1598,71 @@ function App() {
                   Set initial stock balances individually for each box type and condition (Filled and Empty).
                 </div>
 
-                {loadingBalance ? (
-                  <div className="empty-state"><div className="em">⏳</div>Loading balance data...</div>
-                ) : (
-                  <div className="table-scroll">
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Box Type</th>
-                          <th>Initial Filled (Pcs)</th>
-                          <th>Initial Empty (Pcs)</th>
-                          <th>Current Available Stock (Filled / Empty)</th>
-                          <th>Action</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {BOX_TYPES.map((bType) => {
-                          const filledKey = `${selectedMasterLoc}__${bType}__Filled`;
-                          const emptyKey = `${selectedMasterLoc}__${bType}__Empty`;
+                <div className="table-scroll">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Box Type</th>
+                        <th>Initial Filled (Pcs)</th>
+                        <th>Initial Empty (Pcs)</th>
+                        <th>Current Available Stock (Filled / Empty)</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {BOX_TYPES.map((bType) => {
+                        const filledKey = `${selectedMasterLoc}__${bType}__Filled`;
+                        const emptyKey = `${selectedMasterLoc}__${bType}__Empty`;
 
-                          const currFilled = getStock(selectedMasterLoc, bType, "Filled");
-                          const currEmpty = getStock(selectedMasterLoc, bType, "Empty");
+                        const currFilled = getStock(selectedMasterLoc, bType, "Filled");
+                        const currEmpty = getStock(selectedMasterLoc, bType, "Empty");
 
-                          const inputFilled = masterBalanceInputs[filledKey] ?? (initialBalance[filledKey] || 0);
-                          const inputEmpty = masterBalanceInputs[emptyKey] ?? (initialBalance[emptyKey] || 0);
+                        const inputFilled = masterBalanceInputs[filledKey] ?? (initialBalance[filledKey] || 0);
+                        const inputEmpty = masterBalanceInputs[emptyKey] ?? (initialBalance[emptyKey] || 0);
 
-                          return (
-                            <tr key={bType}>
-                              <td style={{ fontWeight: 800 }}>{bType}</td>
-                              <td style={{ width: "160px" }}>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  className="inline-select"
-                                  style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }}
-                                  value={inputFilled}
-                                  onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [filledKey]: e.target.value }))}
-                                />
-                              </td>
-                              <td style={{ width: "160px" }}>
-                                <input
-                                  type="number"
-                                  min="0"
-                                  className="inline-select"
-                                  style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }}
-                                  value={inputEmpty}
-                                  onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [emptyKey]: e.target.value }))}
-                                />
-                              </td>
-                              <td>
-                                <span style={{ fontWeight: 800, color: "var(--terisi)" }}>{currFilled} Filled</span>
-                                <span style={{ color: "var(--ink-soft)", margin: "0 6px" }}>/</span>
-                                <span style={{ fontWeight: 800, color: "var(--kosong)" }}>{currEmpty} Empty</span>
-                              </td>
-                              <td>
-                                <button
-                                  className="btn btn-outline"
-                                  style={{ padding: "7px 14px", fontSize: "12px", fontWeight: "700" }}
-                                  onClick={() => saveInitialBalanceRow(selectedMasterLoc, bType)}
-                                >
-                                  💾 Save
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                        return (
+                          <tr key={bType}>
+                            <td style={{ fontWeight: 800 }}>{bType}</td>
+                            <td style={{ width: "160px" }}>
+                              <input
+                                type="number"
+                                min="0"
+                                className="inline-select"
+                                style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }}
+                                value={inputFilled}
+                                onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [filledKey]: e.target.value }))}
+                              />
+                            </td>
+                            <td style={{ width: "160px" }}>
+                              <input
+                                type="number"
+                                min="0"
+                                className="inline-select"
+                                style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }}
+                                value={inputEmpty}
+                                onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [emptyKey]: e.target.value }))}
+                              />
+                            </td>
+                            <td>
+                              <span style={{ fontWeight: 800, color: "var(--terisi)" }}>{currFilled} Filled</span>
+                              <span style={{ color: "var(--ink-soft)", margin: "0 6px" }}>/</span>
+                              <span style={{ fontWeight: 800, color: "var(--kosong)" }}>{currEmpty} Empty</span>
+                            </td>
+                            <td>
+                              <button
+                                className="btn btn-outline"
+                                style={{ padding: "7px 14px", fontSize: "12px", fontWeight: "700" }}
+                                onClick={() => saveInitialBalanceRow(selectedMasterLoc, bType)}
+                              >
+                                💾 Save
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </>
           )}
@@ -1618,7 +1698,7 @@ function App() {
                     <tbody>
                       {locationStats.map((item) => {
                         const loc = item.location;
-                        const capData = areaCapacity[loc] || {};
+                        const capData = areaCapacity[loc] || DEFAULT_CAPACITIES[loc] || {};
 
                         const val10 = masterCapInputs[`${loc}__cap10`] !== undefined
                           ? masterCapInputs[`${loc}__cap10`]
