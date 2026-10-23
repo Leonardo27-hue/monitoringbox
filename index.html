@@ -155,16 +155,25 @@ function uid() {
 
 function formatDate(iso) {
   if (!iso) return "-";
-  const d = new Date(iso);
-  return d.toLocaleString("en-US", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  try {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return String(iso);
+    return d.toLocaleString("en-US", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch (e) {
+    return String(iso);
+  }
 }
 
 function formatDateLong(yyyy_mm_dd) {
   if (!yyyy_mm_dd) return "-";
-  const parts = yyy_mm_dd.split("-");
-  if (parts.length !== 3) return yyy_mm_dd;
-  const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
-  return d.toLocaleDateString("en-US", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+  const parts = String(yyyy_mm_dd).split("-");
+  if (parts.length !== 3) return yyyy_mm_dd;
+  try {
+    const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+    return d.toLocaleDateString("en-US", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+  } catch (e) {
+    return yyyy_mm_dd;
+  }
 }
 
 function getTodayString() {
@@ -211,9 +220,10 @@ function App() {
     try { return localStorage.getItem("namaPenggunaBoxTracing") || ""; } catch (e) { return ""; }
   });
 
-  const isAdmin = ADMIN_USERS.some((a) => a.toLowerCase() === userName.trim().toLowerCase());
-  const isReportUser = REPORT_USERS.some((u) => u.toLowerCase() === userName.trim().toLowerCase());
-  const isRestrictedUser = RESTRICTED_USERS.some((r) => r.toLowerCase() === userName.trim().toLowerCase());
+  const cleanUser = (userName || "").trim().toLowerCase();
+  const isAdmin = ADMIN_USERS.some((a) => a.toLowerCase() === cleanUser);
+  const isReportUser = REPORT_USERS.some((u) => u.toLowerCase() === cleanUser);
+  const isRestrictedUser = RESTRICTED_USERS.some((r) => r.toLowerCase() === cleanUser);
 
   const [tab, setTab] = useState(() => (isRestrictedUser ? "movement" : "dashboard"));
   const [masterSubOpen, setMasterSubOpen] = useState(false);
@@ -477,7 +487,7 @@ function App() {
   }, [movements, initialBalance, conditionForm.location, conditionForm.boxType, conditionForm.prevCondition]);
 
   const filteredMovements = useMemo(() => {
-    return movements.filter((m) => {
+    return (movements || []).filter((m) => {
       if (!searchMovement.trim()) return true;
       const q = searchMovement.trim().toLowerCase();
       return (
@@ -496,77 +506,103 @@ function App() {
     return filteredMovements.slice(start, start + pageSizeMovement);
   }, [filteredMovements, pageMovement, pageSizeMovement]);
 
+  // REPORT SUMMARY DENGAN PERLINDUNGAN ERROR LENGKAP
   const reportSummary = useMemo(() => {
-    let sDate = reportStartDate || getTodayString();
-    let eDate = reportEndDate || sDate;
+    try {
+      let sDate = reportStartDate || getTodayString();
+      let eDate = reportEndDate || sDate;
 
-    if (sDate > eDate) {
-      const tmp = sDate;
-      sDate = eDate;
-      eDate = tmp;
+      if (sDate > eDate) {
+        const tmp = sDate;
+        sDate = eDate;
+        eDate = tmp;
+      }
+
+      const sParts = sDate.split("-");
+      const eParts = eDate.split("-");
+      const start = new Date(Number(sParts[0]), Number(sParts[1]) - 1, Number(sParts[2]), 0, 0, 0, 0).getTime();
+      const end = new Date(Number(eParts[0]), Number(eParts[1]) - 1, Number(eParts[2]), 23, 59, 59, 999).getTime();
+
+      const list = Array.isArray(movements) ? movements : [];
+      const filtered = list.filter((m) => {
+        if (!m || !m.timestamp) return false;
+        const t = new Date(m.timestamp).getTime();
+        return !isNaN(t) && t >= start && t <= end && m.actionType !== "condition_update";
+      });
+
+      const routeMap = {};
+      filtered.forEach((m) => {
+        const from = String(m.fromLoc || m.location || "").trim().toLowerCase();
+        const to = String(m.toLoc || m.location || "").trim().toLowerCase();
+        if (from && to) {
+          const key = `${from}||${to}`;
+          routeMap[key] = (routeMap[key] || 0) + (Number(m.qty) || 0);
+        }
+      });
+
+      const getRouteQty = (from, to) => routeMap[`${from.toLowerCase()}||${to.toLowerCase()}`] || 0;
+
+      const groupSundry = [
+        { label: "Sundry to Paper", from: "Sundry", to: "Paper", qty: getRouteQty("Sundry", "Paper") },
+        { label: "Sundry to Filter", from: "Sundry", to: "Filter", qty: getRouteQty("Sundry", "Filter") },
+        { label: "Sundry to Cutting", from: "Sundry", to: "Cutting", qty: getRouteQty("Sundry", "Cutting") },
+        { label: "Sundry to Remove Filter", from: "Sundry", to: "Remove Filter", qty: getRouteQty("Sundry", "Remove Filter") },
+      ];
+
+      const groupPaper = [
+        { label: "Paper to BB1", from: "Paper", to: "BB1", qty: getRouteQty("Paper", "BB1") },
+        { label: "Paper to BB2", from: "Paper", to: "BB2", qty: getRouteQty("Paper", "BB2") },
+        { label: "Paper to BB3", from: "Paper", to: "BB3", qty: getRouteQty("Paper", "BB3") },
+        { label: "Paper to GP3", from: "Paper", to: "GP3", qty: getRouteQty("Paper", "GP3") },
+      ];
+
+      const groupFilter = [
+        { label: "Filter to BB1", from: "Filter", to: "BB1", qty: getRouteQty("Filter", "BB1") },
+        { label: "Filter to BB2", from: "Filter", to: "BB2", qty: getRouteQty("Filter", "BB2") },
+        { label: "Filter to BB3", from: "Filter", to: "BB3", qty: getRouteQty("Filter", "BB3") },
+        { label: "Filter to GP3", from: "Filter", to: "GP3", qty: getRouteQty("Filter", "GP3") },
+      ];
+
+      const groupReturn = [
+        { label: "BB1 to Sundry", from: "BB1", to: "Sundry", qty: getRouteQty("BB1", "Sundry") },
+        { label: "BB2 to Sundry", from: "BB2", to: "Sundry", qty: getRouteQty("BB2", "Sundry") },
+        { label: "BB3 to Sundry", from: "BB3", to: "Sundry", qty: getRouteQty("BB3", "Sundry") },
+        { label: "GP3 to Sundry", from: "GP3", to: "Sundry", qty: getRouteQty("GP3", "Sundry") },
+      ];
+
+      const sumQty = (arr) => arr.reduce((acc, r) => acc + (Number(r.qty) || 0), 0);
+
+      return {
+        startDate: sDate,
+        endDate: eDate,
+        groupSundry,
+        groupPaper,
+        groupFilter,
+        groupReturn,
+        totalSundry: sumQty(groupSundry),
+        totalPaper: sumQty(groupPaper),
+        totalFilter: sumQty(groupFilter),
+        totalReturn: sumQty(groupReturn),
+        totalMovedToday: filtered.reduce((acc, m) => acc + (Number(m.qty) || 0), 0),
+        totalTransactions: filtered.length
+      };
+    } catch (e) {
+      console.error("Error computing report summary:", e);
+      return {
+        startDate: getTodayString(),
+        endDate: getTodayString(),
+        groupSundry: [],
+        groupPaper: [],
+        groupFilter: [],
+        groupReturn: [],
+        totalSundry: 0,
+        totalPaper: 0,
+        totalFilter: 0,
+        totalReturn: 0,
+        totalMovedToday: 0,
+        totalTransactions: 0
+      };
     }
-
-    const start = new Date(sDate + "T00:00:00").getTime();
-    const end = new Date(eDate + "T23:59:59.999").getTime();
-
-    const filtered = movements.filter((m) => {
-      if (!m.timestamp) return false;
-      const t = new Date(m.timestamp).getTime();
-      return !isNaN(t) && t >= start && t <= end && m.actionType !== "condition_update";
-    });
-
-    const routeMap = {};
-    filtered.forEach((m) => {
-      const key = `${m.fromLoc.trim().toLowerCase()}||${m.toLoc.trim().toLowerCase()}`;
-      routeMap[key] = (routeMap[key] || 0) + (Number(m.qty) || 0);
-    });
-
-    const getRouteQty = (from, to) => routeMap[`${from.toLowerCase()}||${to.toLowerCase()}`] || 0;
-
-    const groupSundry = [
-      { label: "Sundry to Paper", from: "Sundry", to: "Paper", qty: getRouteQty("Sundry", "Paper") },
-      { label: "Sundry to Filter", from: "Sundry", to: "Filter", qty: getRouteQty("Sundry", "Filter") },
-      { label: "Sundry to Cutting", from: "Sundry", to: "Cutting", qty: getRouteQty("Sundry", "Cutting") },
-      { label: "Sundry to Remove Filter", from: "Sundry", to: "Remove Filter", qty: getRouteQty("Sundry", "Remove Filter") },
-    ];
-
-    const groupPaper = [
-      { label: "Paper to BB1", from: "Paper", to: "BB1", qty: getRouteQty("Paper", "BB1") },
-      { label: "Paper to BB2", from: "Paper", to: "BB2", qty: getRouteQty("Paper", "BB2") },
-      { label: "Paper to BB3", from: "Paper", to: "BB3", qty: getRouteQty("Paper", "BB3") },
-      { label: "Paper to GP3", from: "Paper", to: "GP3", qty: getRouteQty("Paper", "GP3") },
-    ];
-
-    const groupFilter = [
-      { label: "Filter to BB1", from: "Filter", to: "BB1", qty: getRouteQty("Filter", "BB1") },
-      { label: "Filter to BB2", from: "Filter", to: "BB2", qty: getRouteQty("Filter", "BB2") },
-      { label: "Filter to BB3", from: "Filter", to: "BB3", qty: getRouteQty("Filter", "BB3") },
-      { label: "Filter to GP3", from: "Filter", to: "GP3", qty: getRouteQty("Filter", "GP3") },
-    ];
-
-    const groupReturn = [
-      { label: "BB1 to Sundry", from: "BB1", to: "Sundry", qty: getRouteQty("BB1", "Sundry") },
-      { label: "BB2 to Sundry", from: "BB2", to: "Sundry", qty: getRouteQty("BB2", "Sundry") },
-      { label: "BB3 to Sundry", from: "BB3", to: "Sundry", qty: getRouteQty("BB3", "Sundry") },
-      { label: "GP3 to Sundry", from: "GP3", to: "Sundry", qty: getRouteQty("GP3", "Sundry") },
-    ];
-
-    const sumQty = (arr) => arr.reduce((acc, r) => acc + r.qty, 0);
-
-    return {
-      startDate: sDate,
-      endDate: eDate,
-      groupSundry,
-      groupPaper,
-      groupFilter,
-      groupReturn,
-      totalSundry: sumQty(groupSundry),
-      totalPaper: sumQty(groupPaper),
-      totalFilter: sumQty(groupFilter),
-      totalReturn: sumQty(groupReturn),
-      totalMovedToday: filtered.reduce((acc, m) => acc + (Number(m.qty) || 0), 0),
-      totalTransactions: filtered.length
-    };
   }, [movements, reportStartDate, reportEndDate]);
 
   async function handleAddMovement() {
@@ -628,7 +664,6 @@ function App() {
     setHistory(nextH);
     LocalStore.set("movement_history", nextH);
 
-    // HANYA UPDATE KE CLOUD JIKA BUKAN DI LOKAL LAPTOP
     if (!isLocalEnv && db) {
       try {
         const batch = db.batch();
@@ -1386,7 +1421,7 @@ function App() {
             </>
           )}
 
-          {tab === "report" && (isReportUser || isAdmin) && (
+          {tab === "report" && (
             <>
               <div className="toolbar" style={{ marginBottom: "16px", justifyContent: "space-between", flexWrap: "wrap", gap: "12px" }}>
                 <div style={{ fontSize: "18px", fontWeight: "800", color: "var(--ink)" }}>
@@ -1452,7 +1487,7 @@ function App() {
                     <span className="report-card-total-badge">{reportSummary.totalSundry} box</span>
                   </div>
                   <div className="report-row-list">
-                    {reportSummary.groupSundry.map((item, idx) => (
+                    {(reportSummary.groupSundry || []).map((item, idx) => (
                       <div className="report-row-item" key={idx}>
                         <span className="report-row-label">{item.label}</span>
                         <span className="report-row-qty">{item.qty} box</span>
@@ -1467,7 +1502,7 @@ function App() {
                     <span className="report-card-total-badge">{reportSummary.totalPaper} box</span>
                   </div>
                   <div className="report-row-list">
-                    {reportSummary.groupPaper.map((item, idx) => (
+                    {(reportSummary.groupPaper || []).map((item, idx) => (
                       <div className="report-row-item" key={idx}>
                         <span className="report-row-label">{item.label}</span>
                         <span className="report-row-qty">{item.qty} box</span>
@@ -1482,7 +1517,7 @@ function App() {
                     <span className="report-card-total-badge">{reportSummary.totalFilter} box</span>
                   </div>
                   <div className="report-row-list">
-                    {reportSummary.groupFilter.map((item, idx) => (
+                    {(reportSummary.groupFilter || []).map((item, idx) => (
                       <div className="report-row-item" key={idx}>
                         <span className="report-row-label">{item.label}</span>
                         <span className="report-row-qty">{item.qty} box</span>
@@ -1497,7 +1532,7 @@ function App() {
                     <span className="report-card-total-badge">{reportSummary.totalReturn} box</span>
                   </div>
                   <div className="report-row-list">
-                    {reportSummary.groupReturn.map((item, idx) => (
+                    {(reportSummary.groupReturn || []).map((item, idx) => (
                       <div className="report-row-item" key={idx}>
                         <span className="report-row-label">{item.label}</span>
                         <span className="report-row-qty">{item.qty} box</span>
