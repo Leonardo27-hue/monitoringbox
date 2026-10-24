@@ -63,7 +63,6 @@
 <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo, useRef } = React;
 
-// DETEKSI OTOMATIS: JIKA DIBUKA DI PENYIMPANAN LOKAL/DEV MAKA ISOLASI DARI CLOUD
 const isLocalEnv = typeof window !== "undefined" && (
   window.location.protocol === "file:" ||
   window.location.hostname === "localhost" ||
@@ -79,7 +78,6 @@ const firebaseConfig = {
   appId: "1:933443141444:web:3ad886fd89755c54dca111",
 };
 
-// FIREBASE HANYA DIAKTIFKAN JIKA BUKAN DI LINGKUNGAN LOKAL LAPTOP
 let db = null;
 if (!isLocalEnv) {
   try {
@@ -136,7 +134,6 @@ const LocalStore = {
 
 const LOCATIONS = ["Sundry", "Paper", "Filter", "Cutting", "Remove Filter", "BB1", "BB2", "BB3", "GP3", "Jembrana"];
 const BOX_TYPES = ["CB-10", "CB-45", "CB-95", "JM-10", "JM-45", "JM-95"];
-const BOX_SIZES = ["10", "45", "95"];
 
 function getBoxSize(bType) {
   if (!bType) return "10";
@@ -263,10 +260,10 @@ function App() {
   const [movementError, setMovementError] = useState("");
   const [savingMovement, setSavingMovement] = useState(false);
 
-  const [showUpdateMovement, setShowUpdateMovement] = useState(false);
-  const [updateMovForm, setUpdateMovForm] = useState({ fromLoc: "Sundry", toLoc: "Paper", boxType: "CB-10", condition: "Filled", qty: 1 });
-  const [updateMovError, setUpdateMovError] = useState("");
-  const [savingUpdateMov, setSavingUpdateMov] = useState(false);
+  const [showEditMovement, setShowEditMovement] = useState(false);
+  const [editMovForm, setEditMovForm] = useState(null);
+  const [editMovError, setEditMovError] = useState("");
+  const [savingEditMov, setSavingEditMov] = useState(false);
 
   const [showUpdateCondition, setShowUpdateCondition] = useState(false);
   const [conditionForm, setConditionForm] = useState({ location: "Sundry", boxType: "CB-10", prevCondition: "Filled", nextCondition: "Empty", qty: 1 });
@@ -285,7 +282,6 @@ function App() {
     }
   }, [userName, isRestrictedUser, tab]);
 
-  // SINKRONISASI CLOUD HANYA KETIKA BUKAN DIBUKA DARI LOKAL LAPTOP
   useEffect(() => {
     if (isLocalEnv || !db) {
       setCloudStatus("local");
@@ -307,10 +303,7 @@ function App() {
             LocalStore.set("box_movements", list);
           }
         },
-        (err) => {
-          console.warn("Firestore movement error:", err);
-          setCloudStatus("error");
-        }
+        (err) => { setCloudStatus("error"); }
       );
 
       unsub2 = db.collection("initial_balance").onSnapshot(
@@ -330,10 +323,7 @@ function App() {
             });
           }
         },
-        (err) => {
-          console.warn("Firestore balance error:", err);
-          setCloudStatus("error");
-        }
+        (err) => { setCloudStatus("error"); }
       );
 
       unsub3 = db.collection("area_capacity").onSnapshot(
@@ -356,10 +346,7 @@ function App() {
             });
           }
         },
-        (err) => {
-          console.warn("Firestore capacity error:", err);
-          setCloudStatus("error");
-        }
+        (err) => { setCloudStatus("error"); }
       );
 
       if (isAdmin || isReportUser) {
@@ -370,12 +357,10 @@ function App() {
               setHistory(list);
               LocalStore.set("movement_history", list);
             }
-          },
-          (err) => console.warn("Firestore history error:", err)
+          }
         );
       }
     } catch (e) {
-      console.warn("Real-time listener setup error:", e);
       setCloudStatus("error");
     }
 
@@ -413,7 +398,6 @@ function App() {
 
   function getStock(loc, bType, cond) {
     let qty = initialBalance[`${loc}__${bType}__${cond}`] || 0;
-
     movements.forEach((m) => {
       const mQty = Number(m.qty) || 0;
       if (m.actionType === "condition_update") {
@@ -428,49 +412,48 @@ function App() {
         }
       }
     });
+    return Math.max(0, qty);
+  }
 
+  function getStockForEdit(loc, bType, cond, excludeMovId) {
+    let qty = initialBalance[`${loc}__${bType}__${cond}`] || 0;
+    movements.forEach((m) => {
+      if (m.id === excludeMovId) return;
+      const mQty = Number(m.qty) || 0;
+      if (m.actionType === "condition_update") {
+        if (m.location === loc && m.boxType === bType) {
+          if (m.prevCondition === cond) qty -= mQty;
+          if (m.nextCondition === cond) qty += mQty;
+        }
+      } else {
+        if (m.boxType === bType) {
+          if (m.toLoc === loc && m.condition === cond) qty += mQty;
+          if (m.fromLoc === loc && m.condition === cond) qty -= mQty;
+        }
+      }
+    });
     return Math.max(0, qty);
   }
 
   const locationStats = useMemo(() => {
     return LOCATIONS.map((loc) => {
-      let filled = 0;
-      let empty = 0;
-      let boxes10 = 0;
-      let boxes45 = 0;
-      let boxes95 = 0;
-
+      let filled = 0, empty = 0, boxes10 = 0, boxes45 = 0, boxes95 = 0;
       BOX_TYPES.forEach((bType) => {
         const f = getStock(loc, bType, "Filled");
         const e = getStock(loc, bType, "Empty");
-        filled += f;
-        empty += e;
+        filled += f; empty += e;
         const sz = getBoxSize(bType);
         if (sz === "10") boxes10 += (f + e);
         else if (sz === "45") boxes45 += (f + e);
         else if (sz === "95") boxes95 += (f + e);
       });
-
       const totalBoxes = filled + empty;
       const capData = areaCapacity[loc] || DEFAULT_CAPACITIES[loc] || {};
       const cap10 = Number(capData.cap10) || 0;
       const cap45 = Number(capData.cap45) || 0;
       const cap95 = Number(capData.cap95) || 0;
       const maxCap = Number(capData.capacity) || (cap10 + cap45 + cap95) || 100;
-
-      return {
-        location: loc,
-        filled,
-        empty,
-        boxes10,
-        boxes45,
-        boxes95,
-        cap10,
-        cap45,
-        cap95,
-        totalBoxes,
-        maxCap
-      };
+      return { location: loc, filled, empty, boxes10, boxes45, boxes95, cap10, cap45, cap95, totalBoxes, maxCap };
     });
   }, [movements, initialBalance, areaCapacity]);
 
@@ -478,9 +461,10 @@ function App() {
     return getStock(movementForm.fromLoc, movementForm.boxType, movementForm.condition);
   }, [movements, initialBalance, movementForm.fromLoc, movementForm.boxType, movementForm.condition]);
 
-  const currentUpdateMovStock = useMemo(() => {
-    return getStock(updateMovForm.fromLoc, updateMovForm.boxType, updateMovForm.condition);
-  }, [movements, initialBalance, updateMovForm.fromLoc, updateMovForm.boxType, updateMovForm.condition]);
+  const currentEditMovStock = useMemo(() => {
+    if (!editMovForm) return 0;
+    return getStockForEdit(editMovForm.fromLoc, editMovForm.boxType, editMovForm.condition, editMovForm.id);
+  }, [movements, initialBalance, editMovForm]);
 
   const currentConditionStock = useMemo(() => {
     return getStock(conditionForm.location, conditionForm.boxType, conditionForm.prevCondition);
@@ -506,20 +490,12 @@ function App() {
     return filteredMovements.slice(start, start + pageSizeMovement);
   }, [filteredMovements, pageMovement, pageSizeMovement]);
 
-  // REPORT SUMMARY DENGAN PERLINDUNGAN ERROR LENGKAP
   const reportSummary = useMemo(() => {
     try {
       let sDate = reportStartDate || getTodayString();
       let eDate = reportEndDate || sDate;
-
-      if (sDate > eDate) {
-        const tmp = sDate;
-        sDate = eDate;
-        eDate = tmp;
-      }
-
-      const sParts = sDate.split("-");
-      const eParts = eDate.split("-");
+      if (sDate > eDate) { const tmp = sDate; sDate = eDate; eDate = tmp; }
+      const sParts = sDate.split("-"); const eParts = eDate.split("-");
       const start = new Date(Number(sParts[0]), Number(sParts[1]) - 1, Number(sParts[2]), 0, 0, 0, 0).getTime();
       const end = new Date(Number(eParts[0]), Number(eParts[1]) - 1, Number(eParts[2]), 23, 59, 59, 999).getTime();
 
@@ -534,12 +510,8 @@ function App() {
       filtered.forEach((m) => {
         const from = String(m.fromLoc || m.location || "").trim().toLowerCase();
         const to = String(m.toLoc || m.location || "").trim().toLowerCase();
-        if (from && to) {
-          const key = `${from}||${to}`;
-          routeMap[key] = (routeMap[key] || 0) + (Number(m.qty) || 0);
-        }
+        if (from && to) { routeMap[`${from}||${to}`] = (routeMap[`${from}||${to}`] || 0) + (Number(m.qty) || 0); }
       });
-
       const getRouteQty = (from, to) => routeMap[`${from.toLowerCase()}||${to.toLowerCase()}`] || 0;
 
       const groupSundry = [
@@ -548,60 +520,33 @@ function App() {
         { label: "Sundry to Cutting", from: "Sundry", to: "Cutting", qty: getRouteQty("Sundry", "Cutting") },
         { label: "Sundry to Remove Filter", from: "Sundry", to: "Remove Filter", qty: getRouteQty("Sundry", "Remove Filter") },
       ];
-
       const groupPaper = [
         { label: "Paper to BB1", from: "Paper", to: "BB1", qty: getRouteQty("Paper", "BB1") },
         { label: "Paper to BB2", from: "Paper", to: "BB2", qty: getRouteQty("Paper", "BB2") },
         { label: "Paper to BB3", from: "Paper", to: "BB3", qty: getRouteQty("Paper", "BB3") },
         { label: "Paper to GP3", from: "Paper", to: "GP3", qty: getRouteQty("Paper", "GP3") },
       ];
-
       const groupFilter = [
         { label: "Filter to BB1", from: "Filter", to: "BB1", qty: getRouteQty("Filter", "BB1") },
         { label: "Filter to BB2", from: "Filter", to: "BB2", qty: getRouteQty("Filter", "BB2") },
         { label: "Filter to BB3", from: "Filter", to: "BB3", qty: getRouteQty("Filter", "BB3") },
         { label: "Filter to GP3", from: "Filter", to: "GP3", qty: getRouteQty("Filter", "GP3") },
       ];
-
       const groupReturn = [
         { label: "BB1 to Sundry", from: "BB1", to: "Sundry", qty: getRouteQty("BB1", "Sundry") },
         { label: "BB2 to Sundry", from: "BB2", to: "Sundry", qty: getRouteQty("BB2", "Sundry") },
         { label: "BB3 to Sundry", from: "BB3", to: "Sundry", qty: getRouteQty("BB3", "Sundry") },
         { label: "GP3 to Sundry", from: "GP3", to: "Sundry", qty: getRouteQty("GP3", "Sundry") },
       ];
-
       const sumQty = (arr) => arr.reduce((acc, r) => acc + (Number(r.qty) || 0), 0);
 
       return {
-        startDate: sDate,
-        endDate: eDate,
-        groupSundry,
-        groupPaper,
-        groupFilter,
-        groupReturn,
-        totalSundry: sumQty(groupSundry),
-        totalPaper: sumQty(groupPaper),
-        totalFilter: sumQty(groupFilter),
-        totalReturn: sumQty(groupReturn),
-        totalMovedToday: filtered.reduce((acc, m) => acc + (Number(m.qty) || 0), 0),
-        totalTransactions: filtered.length
+        startDate: sDate, endDate: eDate, groupSundry, groupPaper, groupFilter, groupReturn,
+        totalSundry: sumQty(groupSundry), totalPaper: sumQty(groupPaper), totalFilter: sumQty(groupFilter), totalReturn: sumQty(groupReturn),
+        totalMovedToday: filtered.reduce((acc, m) => acc + (Number(m.qty) || 0), 0), totalTransactions: filtered.length
       };
     } catch (e) {
-      console.error("Error computing report summary:", e);
-      return {
-        startDate: getTodayString(),
-        endDate: getTodayString(),
-        groupSundry: [],
-        groupPaper: [],
-        groupFilter: [],
-        groupReturn: [],
-        totalSundry: 0,
-        totalPaper: 0,
-        totalFilter: 0,
-        totalReturn: 0,
-        totalMovedToday: 0,
-        totalTransactions: 0
-      };
+      return { startDate: getTodayString(), endDate: getTodayString(), groupSundry: [], groupPaper: [], groupFilter: [], groupReturn: [], totalSundry: 0, totalPaper: 0, totalFilter: 0, totalReturn: 0, totalMovedToday: 0, totalTransactions: 0 };
     }
   }, [movements, reportStartDate, reportEndDate]);
 
@@ -609,60 +554,22 @@ function App() {
     setMovementError("");
     const { fromLoc, toLoc, boxType, condition, qty } = movementForm;
     const numQty = Number(qty);
-
-    if (!fromLoc || !toLoc || !boxType || !condition) {
-      setMovementError("All fields are required.");
-      return;
-    }
-    if (fromLoc.trim().toLowerCase() === toLoc.trim().toLowerCase()) {
-      setMovementError("From Location and To Location cannot be the same.");
-      return;
-    }
-    if (isNaN(numQty) || numQty <= 0) {
-      setMovementError("Quantity must be greater than 0.");
-      return;
-    }
-
+    if (!fromLoc || !toLoc || !boxType || !condition) return setMovementError("All fields are required.");
+    if (fromLoc.trim().toLowerCase() === toLoc.trim().toLowerCase()) return setMovementError("From and To Location cannot be the same.");
+    if (isNaN(numQty) || numQty <= 0) return setMovementError("Quantity must be greater than 0.");
+    
     const availableStock = getStock(fromLoc, boxType, condition);
-    if (numQty > availableStock) {
-      setMovementError(`Stock not enough! Current available stock is only ${availableStock} pcs.`);
-      return;
-    }
+    if (numQty > availableStock) return setMovementError(`Stock not enough! Available stock is only ${availableStock} pcs.`);
 
     setSavingMovement(true);
     const timestamp = new Date().toISOString();
-
-    const newMov = {
-      id: uid(),
-      actionType: "movement",
-      fromLoc,
-      toLoc,
-      boxType,
-      condition,
-      qty: numQty,
-      createdBy: userName,
-      timestamp
-    };
-
-    const newHist = {
-      id: uid(),
-      action: "Movement",
-      details: `Moved ${numQty} pcs of ${boxType} (${condition}) from ${fromLoc} to ${toLoc}`,
-      fromLoc,
-      toLoc,
-      boxType,
-      qty: numQty,
-      createdBy: userName,
-      timestamp
-    };
+    const newMov = { id: uid(), actionType: "movement", fromLoc, toLoc, boxType, condition, qty: numQty, createdBy: userName, timestamp };
+    const newHist = { id: uid(), action: "Movement", details: `Moved ${numQty} pcs of ${boxType} (${condition}) from ${fromLoc} to ${toLoc}`, fromLoc, toLoc, boxType, qty: numQty, createdBy: userName, timestamp };
 
     const nextM = [newMov, ...movements];
-    setMovements(nextM);
-    LocalStore.set("box_movements", nextM);
-
+    setMovements(nextM); LocalStore.set("box_movements", nextM);
     const nextH = [newHist, ...history];
-    setHistory(nextH);
-    LocalStore.set("movement_history", nextH);
+    setHistory(nextH); LocalStore.set("movement_history", nextH);
 
     if (!isLocalEnv && db) {
       try {
@@ -670,152 +577,84 @@ function App() {
         batch.set(db.collection("box_movements").doc(newMov.id), newMov);
         batch.set(db.collection("movement_history").doc(newHist.id), newHist);
         await batch.commit();
-      } catch (err) {
-        console.warn("Cloud sync warning:", err);
-      }
+      } catch (err) {}
     }
-
     setShowAddMovement(false);
     setMovementForm({ fromLoc: "Sundry", toLoc: "Paper", boxType: "CB-10", condition: "Filled", qty: 1 });
     setToast({ type: "success", msg: `Successfully logged movement of ${numQty} box(es).` });
     setSavingMovement(false);
   }
 
-  async function handleUpdateMovement() {
-    setUpdateMovError("");
-    const { fromLoc, toLoc, boxType, condition, qty } = updateMovForm;
+  function openEditModal(mov) {
+    if (mov.actionType === "condition_update") {
+        setToast({ type: "error", msg: "Cannot edit 'Condition Update' records currently." });
+        return;
+    }
+    setEditMovError("");
+    setEditMovForm({ ...mov });
+    setShowEditMovement(true);
+  }
+
+  async function handleEditMovement() {
+    setEditMovError("");
+    if (!editMovForm) return;
+
+    const { id, fromLoc, toLoc, boxType, condition, qty } = editMovForm;
     const numQty = Number(qty);
 
-    if (!fromLoc || !toLoc || !boxType || !condition) {
-      setUpdateMovError("All fields are required.");
-      return;
-    }
-    if (fromLoc.trim().toLowerCase() === toLoc.trim().toLowerCase()) {
-      setUpdateMovError("From Location and To Location cannot be the same.");
-      return;
-    }
-    if (isNaN(numQty) || numQty <= 0) {
-      setUpdateMovError("Quantity must be greater than 0.");
-      return;
-    }
+    if (!fromLoc || !toLoc || !boxType || !condition) return setEditMovError("All fields are required.");
+    if (fromLoc.trim().toLowerCase() === toLoc.trim().toLowerCase()) return setEditMovError("From and To Location cannot be the same.");
+    if (isNaN(numQty) || numQty <= 0) return setEditMovError("Quantity must be greater than 0.");
 
-    const availableStock = getStock(fromLoc, boxType, condition);
-    if (numQty > availableStock) {
-      setUpdateMovError(`Stock not enough! Current available stock is only ${availableStock} pcs.`);
-      return;
-    }
+    const availableStock = getStockForEdit(fromLoc, boxType, condition, id);
+    if (numQty > availableStock) return setEditMovError(`Stock not enough! Available stock (excluding this edit) is only ${availableStock} pcs.`);
 
-    setSavingUpdateMov(true);
-    const timestamp = new Date().toISOString();
-
-    const newMov = {
-      id: uid(),
-      actionType: "update_movement",
-      fromLoc,
-      toLoc,
-      boxType,
-      condition,
-      qty: numQty,
-      createdBy: userName,
-      timestamp
-    };
-
+    setSavingEditMov(true);
+    const updatedMov = { ...editMovForm, qty: numQty, updatedBy: userName, updatedAt: new Date().toISOString() };
     const newHist = {
-      id: uid(),
-      action: "Update Movement",
-      details: `Updated movement: ${numQty} pcs of ${boxType} (${condition}) from ${fromLoc} to ${toLoc}`,
-      fromLoc,
-      toLoc,
-      boxType,
-      qty: numQty,
-      createdBy: userName,
-      timestamp
+      id: uid(), action: "Edit Movement",
+      details: `Edited record to: ${numQty} pcs of ${boxType} (${condition}) from ${fromLoc} to ${toLoc}`,
+      fromLoc, toLoc, boxType, qty: numQty, createdBy: userName, timestamp: new Date().toISOString()
     };
 
-    const nextM = [newMov, ...movements];
-    setMovements(nextM);
-    LocalStore.set("box_movements", nextM);
-
+    const nextM = movements.map(m => m.id === id ? updatedMov : m);
+    setMovements(nextM); LocalStore.set("box_movements", nextM);
     const nextH = [newHist, ...history];
-    setHistory(nextH);
-    LocalStore.set("movement_history", nextH);
+    setHistory(nextH); LocalStore.set("movement_history", nextH);
 
     if (!isLocalEnv && db) {
       try {
         const batch = db.batch();
-        batch.set(db.collection("box_movements").doc(newMov.id), newMov);
+        batch.update(db.collection("box_movements").doc(id), updatedMov);
         batch.set(db.collection("movement_history").doc(newHist.id), newHist);
         await batch.commit();
-      } catch (err) {
-        console.warn("Cloud sync warning:", err);
-      }
+      } catch (err) {}
     }
-
-    setShowUpdateMovement(false);
-    setToast({ type: "success", msg: `Movement updated successfully (${numQty} pcs).` });
-    setSavingUpdateMov(false);
+    setShowEditMovement(false);
+    setToast({ type: "success", msg: "Movement record successfully updated." });
+    setSavingEditMov(false);
   }
 
   async function handleUpdateCondition() {
     setConditionError("");
     const { location, boxType, prevCondition, nextCondition, qty } = conditionForm;
     const numQty = Number(qty);
-
-    if (!location || !boxType || !prevCondition || !nextCondition) {
-      setConditionError("All fields are required.");
-      return;
-    }
-    if (prevCondition === nextCondition) {
-      setConditionError("Previous and Next condition cannot be the same.");
-      return;
-    }
-    if (isNaN(numQty) || numQty <= 0) {
-      setConditionError("Quantity must be greater than 0.");
-      return;
-    }
+    if (!location || !boxType || !prevCondition || !nextCondition) return setConditionError("All fields are required.");
+    if (prevCondition === nextCondition) return setConditionError("Previous and Next condition cannot be the same.");
+    if (isNaN(numQty) || numQty <= 0) return setConditionError("Quantity must be greater than 0.");
 
     const availableStock = getStock(location, boxType, prevCondition);
-    if (numQty > availableStock) {
-      setConditionError(`Stock not enough! Current available stock is only ${availableStock} pcs.`);
-      return;
-    }
+    if (numQty > availableStock) return setConditionError(`Stock not enough! Available stock is only ${availableStock} pcs.`);
 
     setSavingCondition(true);
     const timestamp = new Date().toISOString();
-
-    const newMov = {
-      id: uid(),
-      actionType: "condition_update",
-      location,
-      fromLoc: location,
-      toLoc: location,
-      boxType,
-      prevCondition,
-      nextCondition,
-      condition: `${prevCondition} → ${nextCondition}`,
-      qty: numQty,
-      createdBy: userName,
-      timestamp
-    };
-
-    const newHist = {
-      id: uid(),
-      action: "Condition Update",
-      details: `Updated condition at ${location}: ${numQty} pcs of ${boxType} changed from ${prevCondition} to ${nextCondition}`,
-      location,
-      boxType,
-      qty: numQty,
-      createdBy: userName,
-      timestamp
-    };
+    const newMov = { id: uid(), actionType: "condition_update", location, fromLoc: location, toLoc: location, boxType, prevCondition, nextCondition, condition: `${prevCondition} → ${nextCondition}`, qty: numQty, createdBy: userName, timestamp };
+    const newHist = { id: uid(), action: "Condition Update", details: `Updated condition at ${location}: ${numQty} pcs of ${boxType} changed from ${prevCondition} to ${nextCondition}`, location, boxType, qty: numQty, createdBy: userName, timestamp };
 
     const nextM = [newMov, ...movements];
-    setMovements(nextM);
-    LocalStore.set("box_movements", nextM);
-
+    setMovements(nextM); LocalStore.set("box_movements", nextM);
     const nextH = [newHist, ...history];
-    setHistory(nextH);
-    LocalStore.set("movement_history", nextH);
+    setHistory(nextH); LocalStore.set("movement_history", nextH);
 
     if (!isLocalEnv && db) {
       try {
@@ -823,11 +662,8 @@ function App() {
         batch.set(db.collection("box_movements").doc(newMov.id), newMov);
         batch.set(db.collection("movement_history").doc(newHist.id), newHist);
         await batch.commit();
-      } catch (err) {
-        console.warn("Cloud sync warning:", err);
-      }
+      } catch (err) {}
     }
-
     setShowUpdateCondition(false);
     setToast({ type: "success", msg: `Condition updated for ${numQty} pcs of ${boxType} at ${location}.` });
     setSavingCondition(false);
@@ -836,24 +672,10 @@ function App() {
   async function saveInitialBalanceRow(location, bType) {
     const filledVal = Number(masterBalanceInputs[`${location}__${bType}__Filled`] ?? (initialBalance[`${location}__${bType}__Filled`] || 0));
     const emptyVal = Number(masterBalanceInputs[`${location}__${bType}__Empty`] ?? (initialBalance[`${location}__${bType}__Empty`] || 0));
-
-    const next = {
-      ...initialBalance,
-      [`${location}__${bType}__Filled`]: filledVal,
-      [`${location}__${bType}__Empty`]: emptyVal
-    };
-    setInitialBalance(next);
-    LocalStore.set("initial_balance", next);
-
+    const next = { ...initialBalance, [`${location}__${bType}__Filled`]: filledVal, [`${location}__${bType}__Empty`]: emptyVal };
+    setInitialBalance(next); LocalStore.set("initial_balance", next);
     if (!isLocalEnv && db) {
-      const docId = `${location}__${bType}`;
-      try {
-        await db.collection("initial_balance").doc(docId).set({
-          location, boxType: bType, filled: filledVal, empty: emptyVal, updatedBy: userName, updatedAt: new Date().toISOString()
-        }, { merge: true });
-      } catch (err) {
-        console.warn("Firestore save error:", err);
-      }
+      try { await db.collection("initial_balance").doc(`${location}__${bType}`).set({ location, boxType: bType, filled: filledVal, empty: emptyVal, updatedBy: userName, updatedAt: new Date().toISOString() }, { merge: true }); } catch (err) {}
     }
     setToast({ type: "success", msg: `Saved initial balance for ${bType} at ${location}.` });
   }
@@ -862,30 +684,18 @@ function App() {
     setSavingMasterBalance(true);
     const next = { ...initialBalance };
     BOX_TYPES.forEach((bType) => {
-      const f = Number(masterBalanceInputs[`${location}__${bType}__Filled`] ?? (initialBalance[`${location}__${bType}__Filled`] || 0));
-      const e = Number(masterBalanceInputs[`${location}__${bType}__Empty`] ?? (initialBalance[`${location}__${bType}__Empty`] || 0));
-      next[`${location}__${bType}__Filled`] = f;
-      next[`${location}__${bType}__Empty`] = e;
+      next[`${location}__${bType}__Filled`] = Number(masterBalanceInputs[`${location}__${bType}__Filled`] ?? (initialBalance[`${location}__${bType}__Filled`] || 0));
+      next[`${location}__${bType}__Empty`] = Number(masterBalanceInputs[`${location}__${bType}__Empty`] ?? (initialBalance[`${location}__${bType}__Empty`] || 0));
     });
-    setInitialBalance(next);
-    LocalStore.set("initial_balance", next);
-
+    setInitialBalance(next); LocalStore.set("initial_balance", next);
     if (!isLocalEnv && db) {
       try {
-        const batch = db.batch();
-        const now = new Date().toISOString();
+        const batch = db.batch(); const now = new Date().toISOString();
         BOX_TYPES.forEach((bType) => {
-          const f = next[`${location}__${bType}__Filled`];
-          const e = next[`${location}__${bType}__Empty`];
-          const docRef = db.collection("initial_balance").doc(`${location}__${bType}`);
-          batch.set(docRef, {
-            location, boxType: bType, filled: f, empty: e, updatedBy: userName, updatedAt: now
-          }, { merge: true });
+          batch.set(db.collection("initial_balance").doc(`${location}__${bType}`), { location, boxType: bType, filled: next[`${location}__${bType}__Filled`], empty: next[`${location}__${bType}__Empty`], updatedBy: userName, updatedAt: now }, { merge: true });
         });
         await batch.commit();
-      } catch (err) {
-        console.warn("Firebase save all error:", err);
-      }
+      } catch (err) {}
     }
     setToast({ type: "success", msg: `All initial balances for ${location} saved successfully!` });
     setSavingMasterBalance(false);
@@ -897,22 +707,10 @@ function App() {
     const cap45 = Number(masterCapInputs[`${location}__cap45`] ?? capData.cap45 ?? 0);
     const cap95 = Number(masterCapInputs[`${location}__cap95`] ?? capData.cap95 ?? 0);
     const totalCap = cap10 + cap45 + cap95;
-
-    const next = {
-      ...areaCapacity,
-      [location]: { cap10, cap45, cap95, capacity: totalCap }
-    };
-    setAreaCapacity(next);
-    LocalStore.set("area_capacity", next);
-
+    const next = { ...areaCapacity, [location]: { cap10, cap45, cap95, capacity: totalCap } };
+    setAreaCapacity(next); LocalStore.set("area_capacity", next);
     if (!isLocalEnv && db) {
-      try {
-        await db.collection("area_capacity").doc(location).set({
-          location, cap10, cap45, cap95, capacity: totalCap, updatedBy: userName, updatedAt: new Date().toISOString()
-        }, { merge: true });
-      } catch (err) {
-        console.warn("Firebase capacity save error:", err);
-      }
+      try { await db.collection("area_capacity").doc(location).set({ location, cap10, cap45, cap95, capacity: totalCap, updatedBy: userName, updatedAt: new Date().toISOString() }, { merge: true }); } catch (err) {}
     }
     setToast({ type: "success", msg: `Capacity for ${location} updated successfully!` });
   }
@@ -920,39 +718,22 @@ function App() {
   async function handleDeleteMovement(mov) {
     if (!window.confirm("Are you sure you want to delete this movement record?")) return;
     const nextM = movements.filter((m) => m.id !== mov.id);
-    setMovements(nextM);
-    LocalStore.set("box_movements", nextM);
-
+    setMovements(nextM); LocalStore.set("box_movements", nextM);
     if (!isLocalEnv && db) {
-      try {
-        await db.collection("box_movements").doc(mov.id).delete();
-      } catch (err) {}
+      try { await db.collection("box_movements").doc(mov.id).delete(); } catch (err) {}
     }
     setToast({ type: "success", msg: "Record deleted." });
   }
 
   if (!userName) {
     return (
-      <div style={{
-        fontFamily: "'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif",
-        minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
-        background: "#F3F5F9", padding: 24,
-      }}>
+      <div style={{ fontFamily: "'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#F3F5F9", padding: 24 }}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@600;800&display=swap');`}</style>
-        <div style={{
-          background: "white", borderRadius: 20, padding: 30, maxWidth: 400, width: "100%",
-          boxShadow: "0 20px 40px -20px rgba(0,0,0,0.25)", textAlign: "center",
-        }}>
+        <div style={{ background: "white", borderRadius: 20, padding: 30, maxWidth: 400, width: "100%", boxShadow: "0 20px 40px -20px rgba(0,0,0,0.25)", textAlign: "center" }}>
           <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 6, color: "#1F2430" }}>Box Monitoring System</div>
           <div style={{ fontSize: 13.5, color: "#6B7280", marginBottom: 18 }}>Please enter your name</div>
-          <input
-            autoFocus value={nameInput} onChange={(e) => setNameInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") startSession(); }} placeholder="Your name"
-            style={{ width: "100%", border: "1.5px solid #E4E7EF", borderRadius: 12, padding: "12px 14px", fontSize: 15, fontFamily: "inherit", marginBottom: 14, textAlign: "center", boxSizing: "border-box" }}
-          />
-          <button onClick={startSession} disabled={!nameInput.trim()} style={{ width: "100%", border: "none", borderRadius: 12, padding: "13px", fontWeight: 800, fontSize: 14.5, color: "white", background: "linear-gradient(145deg,#3454D1,#24399A)", cursor: nameInput.trim() ? "pointer" : "not-allowed", opacity: nameInput.trim() ? 1 : 0.5 }}>
-            Start →
-          </button>
+          <input autoFocus value={nameInput} onChange={(e) => setNameInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") startSession(); }} placeholder="Your name" style={{ width: "100%", border: "1.5px solid #E4E7EF", borderRadius: 12, padding: "12px 14px", fontSize: 15, fontFamily: "inherit", marginBottom: 14, textAlign: "center", boxSizing: "border-box" }} />
+          <button onClick={startSession} disabled={!nameInput.trim()} style={{ width: "100%", border: "none", borderRadius: 12, padding: "13px", fontWeight: 800, fontSize: 14.5, color: "white", background: "linear-gradient(145deg,#3454D1,#24399A)", cursor: nameInput.trim() ? "pointer" : "not-allowed", opacity: nameInput.trim() ? 1 : 0.5 }}>Start →</button>
         </div>
       </div>
     );
@@ -976,14 +757,8 @@ function App() {
         *{ box-sizing:border-box; }
         .app-root{ font-family:'Plus Jakarta Sans',ui-sans-serif,system-ui,sans-serif; color:var(--ink); background:var(--bg); min-height:100vh; display:flex; }
         .mono{ font-family:'IBM Plex Mono',ui-monospace,monospace; }
-
         .sidebar-backdrop{ display:none; }
-
-        .sidebar{
-          width:260px; background:var(--surface); border-right:1px solid var(--border);
-          display:flex; flex-direction:column; padding:20px 14px; position:sticky; top:0;
-          height:100vh; flex-shrink:0; z-index:25; transition:all 0.25s ease;
-        }
+        .sidebar{ width:260px; background:var(--surface); border-right:1px solid var(--border); display:flex; flex-direction:column; padding:20px 14px; position:sticky; top:0; height:100vh; flex-shrink:0; z-index:25; transition:all 0.25s ease; }
         .sidebar.closed{ width:0; padding:20px 0; opacity:0; overflow:hidden; border-right:none; pointer-events:none; }
         .sidebar-brand{ display:flex; align-items:center; gap:10px; font-weight:800; font-size:18px; margin-bottom:24px; padding:0 8px; white-space:nowrap; position:relative; }
         .sidebar-brand-dot{ width:34px; height:34px; border-radius:10px; overflow:hidden; flex-shrink:0; }
@@ -995,7 +770,6 @@ function App() {
         .sidebar-btn.active{ background:var(--ink); color:white; }
         .sub-menu-container{ padding-left:14px; display:flex; flex-direction:column; gap:4px; margin-top:2px; margin-bottom:4px; }
         .sub-menu-btn{ padding:9px 12px; font-size:12.5px; }
-
         .main-wrapper{ flex:1; min-width:0; overflow-y:auto; }
         .top-header{ background:var(--surface); border-bottom:1px solid var(--border); padding:12px 20px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:15; }
         .toggle-btn{ border:1.5px solid var(--border); background:var(--bg); width:38px; height:38px; border-radius:10px; display:flex; align-items:center; justify-content:center; cursor:pointer; font-size:16px; color:var(--ink); transition:all 0.15s ease; }
@@ -1009,6 +783,7 @@ function App() {
         .user-menu-item{ width:100%; text-align:left; border:none; background:transparent; padding:9px 10px; border-radius:8px; font-size:13px; font-weight:700; color:var(--ink); cursor:pointer; }
         .aksi-btn{ width:30px; height:30px; border-radius:9px; border:1px solid var(--border); background:var(--surface); cursor:pointer; font-size:13px; display:flex; align-items:center; justify-content:center; }
         .aksi-btn.hapus{ background:var(--danger-tint); border-color:var(--danger); color:var(--danger); }
+        .aksi-btn.edit{ background:#E8ECFC; border-color:#B9D3EC; color:#3454D1; }
         .stat-strip{ display:flex; gap:10px; padding:16px 20px 0; flex-wrap:wrap; }
         .stat-chip{ flex:1; min-width:130px; background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:12px 16px; }
         .stat-chip .num{ font-size:24px; font-weight:800; line-height:1; }
@@ -1053,68 +828,15 @@ function App() {
         .dashboard-card-title{ font-size:15px; font-weight:800; color:var(--ink); display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
         .progress-bar-bg{ background:#E4E7EF; border-radius:99px; height:10px; width:100%; overflow:hidden; margin:10px 0 12px; }
         .progress-bar-fill{ height:100%; border-radius:99px; transition:width 0.4s ease; }
-
-        .report-grid-section {
-          display: grid;
-          grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-          gap: 16px;
-          margin-top: 16px;
-        }
-        .report-card-group {
-          background: var(--surface);
-          border: 1px solid var(--border);
-          border-radius: 16px;
-          padding: 18px 20px;
-          box-shadow: 0 4px 12px -4px rgba(0,0,0,0.03);
-        }
-        .report-card-head {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          border-bottom: 1.5px solid var(--border);
-          padding-bottom: 12px;
-          margin-bottom: 14px;
-        }
-        .report-card-title {
-          font-size: 14.5px;
-          font-weight: 800;
-          color: var(--ink);
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        .report-card-total-badge {
-          background: #EEF2FF;
-          color: #3454D1;
-          padding: 4px 12px;
-          border-radius: 999px;
-          font-size: 12.5px;
-          font-weight: 800;
-        }
-        .report-row-list {
-          display: flex;
-          flex-direction: column;
-          gap: 8px;
-        }
-        .report-row-item {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 9px 14px;
-          background: #FAFBFD;
-          border: 1px solid var(--border);
-          border-radius: 10px;
-          font-size: 13.5px;
-        }
-        .report-row-label {
-          font-weight: 700;
-          color: #374151;
-        }
-        .report-row-qty {
-          font-weight: 800;
-          color: #3454D1;
-        }
-
+        .report-grid-section { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }
+        .report-card-group { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; box-shadow: 0 4px 12px -4px rgba(0,0,0,0.03); }
+        .report-card-head { display: flex; align-items: center; justify-content: space-between; border-bottom: 1.5px solid var(--border); padding-bottom: 12px; margin-bottom: 14px; }
+        .report-card-title { font-size: 14.5px; font-weight: 800; color: var(--ink); display: flex; align-items: center; gap: 8px; }
+        .report-card-total-badge { background: #EEF2FF; color: #3454D1; padding: 4px 12px; border-radius: 999px; font-size: 12.5px; font-weight: 800; }
+        .report-row-list { display: flex; flex-direction: column; gap: 8px; }
+        .report-row-item { display: flex; align-items: center; justify-content: space-between; padding: 9px 14px; background: #FAFBFD; border: 1px solid var(--border); border-radius: 10px; font-size: 13.5px; }
+        .report-row-label { font-weight: 700; color: #374151; }
+        .report-row-qty { font-weight: 800; color: #3454D1; }
         @media (max-width:820px){
           .sidebar{ position:fixed; inset:0 auto 0 0; height:100vh; box-shadow:0 0 20px rgba(0,0,0,0.15); }
           .sidebar-close-btn{ display:flex; }
@@ -1271,42 +993,28 @@ function App() {
               <div className="dashboard-grid">
                 {locationStats.map((item) => {
                   const pct = item.maxCap > 0 ? Math.round((item.totalBoxes / item.maxCap) * 100) : 0;
-                  let barColor = "var(--terisi)";
-                  let statusText = "🟢 Normal";
-                  let badgeBg = "var(--terisi-tint)";
-                  let textColor = "var(--terisi)";
-
-                  if (pct >= 90) {
-                    barColor = "var(--danger)"; statusText = "🔴 Full"; badgeBg = "var(--danger-tint)"; textColor = "var(--danger)";
-                  } else if (pct >= 70) {
-                    barColor = "var(--kosong)"; statusText = "🟡 Near Full"; badgeBg = "var(--kosong-tint)"; textColor = "var(--kosong)";
-                  }
-
+                  let barColor = "var(--terisi)"; let statusText = "🟢 Normal"; let badgeBg = "var(--terisi-tint)"; let textColor = "var(--terisi)";
+                  if (pct >= 90) { barColor = "var(--danger)"; statusText = "🔴 Full"; badgeBg = "var(--danger-tint)"; textColor = "var(--danger)"; } 
+                  else if (pct >= 70) { barColor = "var(--kosong)"; statusText = "🟡 Near Full"; badgeBg = "var(--kosong-tint)"; textColor = "var(--kosong)"; }
                   return (
                     <div className="dashboard-card" key={item.location}>
                       <div className="dashboard-card-title">
                         <span>{item.location}</span>
-                        <span className="badge" style={{ background: badgeBg, color: textColor, fontSize: "11px" }}>
-                          {statusText}
-                        </span>
+                        <span className="badge" style={{ background: badgeBg, color: textColor, fontSize: "11px" }}>{statusText}</span>
                       </div>
-
                       <div style={{ display: "flex", alignItems: "baseline", gap: "6px" }}>
                         <span style={{ fontSize: "26px", fontWeight: "800", color: "var(--ink)" }}>{item.totalBoxes}</span>
                         <span style={{ fontSize: "14px", fontWeight: "700", color: "var(--ink-soft)" }}>/ {item.maxCap} Boxes</span>
                         <span style={{ marginLeft: "auto", fontSize: "15px", fontWeight: "800", color: textColor }}>{pct}%</span>
                       </div>
-
                       <div className="progress-bar-bg">
                         <div className="progress-bar-fill" style={{ width: `${Math.min(100, pct)}%`, background: barColor }} />
                       </div>
-
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11.5px", fontWeight: "700", marginBottom: "6px" }}>
                         <span style={{ color: "var(--terisi)" }}>🟢 Filled: {item.filled}</span>
                         <span style={{ color: "var(--kosong)" }}>🟡 Empty: {item.empty}</span>
                         <span style={{ color: "var(--ink-soft)" }}>⚪ Free: {Math.max(0, item.maxCap - item.totalBoxes)}</span>
                       </div>
-
                       <div style={{ borderTop: "1px dashed var(--border)", paddingTop: "8px", display: "flex", justifyContent: "space-between", fontSize: "11px", color: "var(--ink-soft)", fontWeight: "600" }}>
                         <span>Size 10: <b>{item.boxes10}</b>/{item.cap10 || '—'}</span>
                         <span>Size 45: <b>{item.boxes45}</b>/{item.cap45 || '—'}</span>
@@ -1326,17 +1034,6 @@ function App() {
                   <span>🔍</span>
                   <input placeholder="Search box type, location, condition, or user..." value={searchMovement} onChange={(e) => { setSearchMovement(e.target.value); setPageMovement(1); }} />
                 </div>
-
-                <button
-                  className="btn btn-outline"
-                  style={{ background: "#E8ECFC", borderColor: "#3454D1", color: "#3454D1" }}
-                  onClick={() => {
-                    setUpdateMovError("");
-                    setShowUpdateMovement(true);
-                  }}
-                >
-                  🔄 Update Movement
-                </button>
 
                 <button
                   className="btn btn-outline"
@@ -1400,7 +1097,10 @@ function App() {
                               <td style={{ color: "var(--ink-soft)", fontSize: 12 }}>{formatDate(m.timestamp)}</td>
                               {isAdmin && (
                                 <td>
-                                  <button className="aksi-btn hapus" title="Delete record" onClick={() => handleDeleteMovement(m)}>🗑️</button>
+                                  <div style={{ display: "flex", gap: "6px" }}>
+                                    <button className="aksi-btn edit" title="Edit record" onClick={() => openEditModal(m)}>✏️</button>
+                                    <button className="aksi-btn hapus" title="Delete record" onClick={() => handleDeleteMovement(m)}>🗑️</button>
+                                  </div>
                                 </td>
                               )}
                             </tr>
@@ -1421,7 +1121,7 @@ function App() {
             </>
           )}
 
-          {tab === "report" && (
+          {tab === "report" && (isReportUser || isAdmin) && (
             <>
               <div className="toolbar" style={{ marginBottom: "16px", justifyContent: "space-between", flexWrap: "wrap", gap: "12px" }}>
                 <div style={{ fontSize: "18px", fontWeight: "800", color: "var(--ink)" }}>
@@ -1431,35 +1131,13 @@ function App() {
                 <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                     <label style={{ fontSize: "13px", fontWeight: "700", color: "var(--ink-soft)" }}>From:</label>
-                    <input
-                      type="date"
-                      className="inline-select"
-                      value={reportStartDate}
-                      onChange={(e) => setReportStartDate(e.target.value)}
-                      style={{ fontSize: "13px", padding: "7px 10px", fontWeight: "700" }}
-                    />
+                    <input type="date" className="inline-select" value={reportStartDate} onChange={(e) => setReportStartDate(e.target.value)} style={{ fontSize: "13px", padding: "7px 10px", fontWeight: "700" }} />
                   </div>
-
                   <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                     <label style={{ fontSize: "13px", fontWeight: "700", color: "var(--ink-soft)" }}>To:</label>
-                    <input
-                      type="date"
-                      className="inline-select"
-                      value={reportEndDate}
-                      onChange={(e) => setReportEndDate(e.target.value)}
-                      style={{ fontSize: "13px", padding: "7px 10px", fontWeight: "700" }}
-                    />
+                    <input type="date" className="inline-select" value={reportEndDate} onChange={(e) => setReportEndDate(e.target.value)} style={{ fontSize: "13px", padding: "7px 10px", fontWeight: "700" }} />
                   </div>
-
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => {
-                      const today = getTodayString();
-                      setReportStartDate(today);
-                      setReportEndDate(today);
-                    }}
-                    style={{ padding: "7px 12px", fontSize: "12.5px" }}
-                  >
+                  <button className="btn btn-outline" onClick={() => { const today = getTodayString(); setReportStartDate(today); setReportEndDate(today); }} style={{ padding: "7px 12px", fontSize: "12.5px" }}>
                     📅 Today
                   </button>
                 </div>
@@ -1488,10 +1166,7 @@ function App() {
                   </div>
                   <div className="report-row-list">
                     {(reportSummary.groupSundry || []).map((item, idx) => (
-                      <div className="report-row-item" key={idx}>
-                        <span className="report-row-label">{item.label}</span>
-                        <span className="report-row-qty">{item.qty} box</span>
-                      </div>
+                      <div className="report-row-item" key={idx}><span className="report-row-label">{item.label}</span><span className="report-row-qty">{item.qty} box</span></div>
                     ))}
                   </div>
                 </div>
@@ -1503,10 +1178,7 @@ function App() {
                   </div>
                   <div className="report-row-list">
                     {(reportSummary.groupPaper || []).map((item, idx) => (
-                      <div className="report-row-item" key={idx}>
-                        <span className="report-row-label">{item.label}</span>
-                        <span className="report-row-qty">{item.qty} box</span>
-                      </div>
+                      <div className="report-row-item" key={idx}><span className="report-row-label">{item.label}</span><span className="report-row-qty">{item.qty} box</span></div>
                     ))}
                   </div>
                 </div>
@@ -1518,10 +1190,7 @@ function App() {
                   </div>
                   <div className="report-row-list">
                     {(reportSummary.groupFilter || []).map((item, idx) => (
-                      <div className="report-row-item" key={idx}>
-                        <span className="report-row-label">{item.label}</span>
-                        <span className="report-row-qty">{item.qty} box</span>
-                      </div>
+                      <div className="report-row-item" key={idx}><span className="report-row-label">{item.label}</span><span className="report-row-qty">{item.qty} box</span></div>
                     ))}
                   </div>
                 </div>
@@ -1533,10 +1202,7 @@ function App() {
                   </div>
                   <div className="report-row-list">
                     {(reportSummary.groupReturn || []).map((item, idx) => (
-                      <div className="report-row-item" key={idx}>
-                        <span className="report-row-label">{item.label}</span>
-                        <span className="report-row-qty">{item.qty} box</span>
-                      </div>
+                      <div className="report-row-item" key={idx}><span className="report-row-label">{item.label}</span><span className="report-row-qty">{item.qty} box</span></div>
                     ))}
                   </div>
                 </div>
@@ -1592,10 +1258,8 @@ function App() {
                       {BOX_TYPES.map((bType) => {
                         const filledKey = `${selectedMasterLoc}__${bType}__Filled`;
                         const emptyKey = `${selectedMasterLoc}__${bType}__Empty`;
-
                         const currFilled = getStock(selectedMasterLoc, bType, "Filled");
                         const currEmpty = getStock(selectedMasterLoc, bType, "Empty");
-
                         const inputFilled = masterBalanceInputs[filledKey] ?? (initialBalance[filledKey] || 0);
                         const inputEmpty = masterBalanceInputs[emptyKey] ?? (initialBalance[emptyKey] || 0);
 
@@ -1603,24 +1267,10 @@ function App() {
                           <tr key={bType}>
                             <td style={{ fontWeight: 800 }}>{bType}</td>
                             <td style={{ width: "160px" }}>
-                              <input
-                                type="number"
-                                min="0"
-                                className="inline-select"
-                                style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }}
-                                value={inputFilled}
-                                onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [filledKey]: e.target.value }))}
-                              />
+                              <input type="number" min="0" className="inline-select" style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }} value={inputFilled} onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [filledKey]: e.target.value }))} />
                             </td>
                             <td style={{ width: "160px" }}>
-                              <input
-                                type="number"
-                                min="0"
-                                className="inline-select"
-                                style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }}
-                                value={inputEmpty}
-                                onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [emptyKey]: e.target.value }))}
-                              />
+                              <input type="number" min="0" className="inline-select" style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }} value={inputEmpty} onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [emptyKey]: e.target.value }))} />
                             </td>
                             <td>
                               <span style={{ fontWeight: 800, color: "var(--terisi)" }}>{currFilled} Filled</span>
@@ -1628,11 +1278,7 @@ function App() {
                               <span style={{ fontWeight: 800, color: "var(--kosong)" }}>{currEmpty} Empty</span>
                             </td>
                             <td>
-                              <button
-                                className="btn btn-outline"
-                                style={{ padding: "7px 14px", fontSize: "12px", fontWeight: "700" }}
-                                onClick={() => saveInitialBalanceRow(selectedMasterLoc, bType)}
-                              >
+                              <button className="btn btn-outline" style={{ padding: "7px 14px", fontSize: "12px", fontWeight: "700" }} onClick={() => saveInitialBalanceRow(selectedMasterLoc, bType)}>
                                 💾 Save
                               </button>
                             </td>
@@ -1679,18 +1325,9 @@ function App() {
                         const loc = item.location;
                         const capData = areaCapacity[loc] || DEFAULT_CAPACITIES[loc] || {};
 
-                        const val10 = masterCapInputs[`${loc}__cap10`] !== undefined
-                          ? masterCapInputs[`${loc}__cap10`]
-                          : (capData.cap10 || 0);
-
-                        const val45 = masterCapInputs[`${loc}__cap45`] !== undefined
-                          ? masterCapInputs[`${loc}__cap45`]
-                          : (capData.cap45 || 0);
-
-                        const val95 = masterCapInputs[`${loc}__cap95`] !== undefined
-                          ? masterCapInputs[`${loc}__cap95`]
-                          : (capData.cap95 || 0);
-
+                        const val10 = masterCapInputs[`${loc}__cap10`] !== undefined ? masterCapInputs[`${loc}__cap10`] : (capData.cap10 || 0);
+                        const val45 = masterCapInputs[`${loc}__cap45`] !== undefined ? masterCapInputs[`${loc}__cap45`] : (capData.cap45 || 0);
+                        const val95 = masterCapInputs[`${loc}__cap95`] !== undefined ? masterCapInputs[`${loc}__cap95`] : (capData.cap95 || 0);
                         const calcTotalCap = Number(val10) + Number(val45) + Number(val95);
                         const displayTotalCap = calcTotalCap > 0 ? calcTotalCap : item.maxCap;
                         const pct = displayTotalCap > 0 ? Math.round((item.totalBoxes / displayTotalCap) * 100) : 0;
@@ -1698,63 +1335,22 @@ function App() {
                         return (
                           <tr key={loc}>
                             <td style={{ fontWeight: 800 }}>{loc}</td>
+                            <td><input type="number" min="0" className="inline-select" style={{ width: "85px", fontSize: "13px", padding: "6px 8px", fontWeight: "700" }} value={val10} onChange={(e) => setMasterCapInputs((prev) => ({ ...prev, [`${loc}__cap10`]: e.target.value }))} /></td>
+                            <td><input type="number" min="0" className="inline-select" style={{ width: "85px", fontSize: "13px", padding: "6px 8px", fontWeight: "700" }} value={val45} onChange={(e) => setMasterCapInputs((prev) => ({ ...prev, [`${loc}__cap45`]: e.target.value }))} /></td>
+                            <td><input type="number" min="0" className="inline-select" style={{ width: "85px", fontSize: "13px", padding: "6px 8px", fontWeight: "700" }} value={val95} onChange={(e) => setMasterCapInputs((prev) => ({ ...prev, [`${loc}__cap95`]: e.target.value }))} /></td>
+                            <td><span style={{ fontWeight: 800, color: "var(--primary)" }}>{displayTotalCap} Boxes</span></td>
                             <td>
-                              <input
-                                type="number"
-                                min="0"
-                                className="inline-select"
-                                style={{ width: "85px", fontSize: "13px", padding: "6px 8px", fontWeight: "700" }}
-                                value={val10}
-                                onChange={(e) => setMasterCapInputs((prev) => ({ ...prev, [`${loc}__cap10`]: e.target.value }))}
-                              />
+                              <span style={{ fontWeight: 700 }}>{item.boxes10}</span><span style={{ color: "var(--ink-soft)" }}> / </span>
+                              <span style={{ fontWeight: 700 }}>{item.boxes45}</span><span style={{ color: "var(--ink-soft)" }}> / </span>
+                              <span style={{ fontWeight: 700 }}>{item.boxes95}</span><span style={{ color: "var(--ink-soft)", fontWeight: 600 }}> ({item.totalBoxes} total)</span>
                             </td>
                             <td>
-                              <input
-                                type="number"
-                                min="0"
-                                className="inline-select"
-                                style={{ width: "85px", fontSize: "13px", padding: "6px 8px", fontWeight: "700" }}
-                                value={val45}
-                                onChange={(e) => setMasterCapInputs((prev) => ({ ...prev, [`${loc}__cap45`]: e.target.value }))}
-                              />
-                            </td>
-                            <td>
-                              <input
-                                type="number"
-                                min="0"
-                                className="inline-select"
-                                style={{ width: "85px", fontSize: "13px", padding: "6px 8px", fontWeight: "700" }}
-                                value={val95}
-                                onChange={(e) => setMasterCapInputs((prev) => ({ ...prev, [`${loc}__cap95`]: e.target.value }))}
-                              />
-                            </td>
-                            <td>
-                              <span style={{ fontWeight: 800, color: "var(--primary)" }}>{displayTotalCap} Boxes</span>
-                            </td>
-                            <td>
-                              <span style={{ fontWeight: 700 }}>{item.boxes10}</span>
-                              <span style={{ color: "var(--ink-soft)" }}> / </span>
-                              <span style={{ fontWeight: 700 }}>{item.boxes45}</span>
-                              <span style={{ color: "var(--ink-soft)" }}> / </span>
-                              <span style={{ fontWeight: 700 }}>{item.boxes95}</span>
-                              <span style={{ color: "var(--ink-soft)", fontWeight: 600 }}> ({item.totalBoxes} total)</span>
-                            </td>
-                            <td>
-                              <span className="badge" style={{
-                                background: pct >= 90 ? "var(--danger-tint)" : pct >= 70 ? "var(--kosong-tint)" : "var(--terisi-tint)",
-                                color: pct >= 90 ? "var(--danger)" : pct >= 70 ? "var(--kosong)" : "var(--terisi)"
-                              }}>
+                              <span className="badge" style={{ background: pct >= 90 ? "var(--danger-tint)" : pct >= 70 ? "var(--kosong-tint)" : "var(--terisi-tint)", color: pct >= 90 ? "var(--danger)" : pct >= 70 ? "var(--kosong)" : "var(--terisi)" }}>
                                 {pct}% ({pct >= 90 ? "Full" : pct >= 70 ? "Near Full" : "Normal"})
                               </span>
                             </td>
                             <td>
-                              <button
-                                className="btn btn-primary"
-                                style={{ padding: "7px 14px", fontSize: "12px" }}
-                                onClick={() => saveAreaCapacityRow(loc)}
-                              >
-                                💾 Save
-                              </button>
+                              <button className="btn btn-primary" style={{ padding: "7px 14px", fontSize: "12px" }} onClick={() => saveAreaCapacityRow(loc)}>💾 Save</button>
                             </td>
                           </tr>
                         );
@@ -1816,13 +1412,7 @@ function App() {
                           </tbody>
                         </table>
                       </div>
-                      <PaginationBar
-                        currentPage={pageHistory}
-                        totalItems={filteredHistory.length}
-                        pageSize={pageSizeHistory}
-                        onPageChange={setPageHistory}
-                        onPageSizeChange={setPageSizeHistory}
-                      />
+                      <PaginationBar currentPage={pageHistory} totalItems={filteredHistory.length} pageSize={pageSizeHistory} onPageChange={setPageHistory} onPageSizeChange={setPageSizeHistory} />
                     </>
                   );
                 })()}
@@ -1846,31 +1436,14 @@ function App() {
             <div className="row-2">
               <div className="field">
                 <label>From Loc (Origin)</label>
-                <select
-                  value={movementForm.fromLoc}
-                  onChange={(e) => {
-                    const newFrom = e.target.value;
-                    setMovementForm((f) => ({
-                      ...f,
-                      fromLoc: newFrom,
-                      toLoc: f.toLoc === newFrom ? LOCATIONS.find((l) => l !== newFrom) : f.toLoc
-                    }));
-                    setMovementError("");
-                  }}
-                >
+                <select value={movementForm.fromLoc} onChange={(e) => { const newFrom = e.target.value; setMovementForm((f) => ({ ...f, fromLoc: newFrom, toLoc: f.toLoc === newFrom ? LOCATIONS.find((l) => l !== newFrom) : f.toLoc })); setMovementError(""); }}>
                   {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
                 </select>
               </div>
 
               <div className="field">
                 <label>To Loc (Destination)</label>
-                <select
-                  value={movementForm.toLoc}
-                  onChange={(e) => {
-                    setMovementForm((f) => ({ ...f, toLoc: e.target.value }));
-                    setMovementError("");
-                  }}
-                >
+                <select value={movementForm.toLoc} onChange={(e) => { setMovementForm((f) => ({ ...f, toLoc: e.target.value })); setMovementError(""); }}>
                   {LOCATIONS.filter((l) => l !== movementForm.fromLoc).map((l) => <option key={l} value={l}>{l}</option>)}
                 </select>
               </div>
@@ -1879,26 +1452,14 @@ function App() {
             <div className="row-2">
               <div className="field">
                 <label>Box Type</label>
-                <select
-                  value={movementForm.boxType}
-                  onChange={(e) => {
-                    setMovementForm((f) => ({ ...f, boxType: e.target.value }));
-                    setMovementError("");
-                  }}
-                >
+                <select value={movementForm.boxType} onChange={(e) => { setMovementForm((f) => ({ ...f, boxType: e.target.value })); setMovementError(""); }}>
                   {BOX_TYPES.map((b) => <option key={b} value={b}>{b}</option>)}
                 </select>
               </div>
 
               <div className="field">
                 <label>Condition</label>
-                <select
-                  value={movementForm.condition}
-                  onChange={(e) => {
-                    setMovementForm((f) => ({ ...f, condition: e.target.value }));
-                    setMovementError("");
-                  }}
-                >
+                <select value={movementForm.condition} onChange={(e) => { setMovementForm((f) => ({ ...f, condition: e.target.value })); setMovementError(""); }}>
                   <option value="Filled">Filled</option>
                   <option value="Empty">Empty</option>
                 </select>
@@ -1916,82 +1477,46 @@ function App() {
 
             <div className="field">
               <label>Quantity (Pcs)</label>
-              <input
-                type="number"
-                min="1"
-                value={movementForm.qty}
-                onChange={(e) => {
-                  setMovementForm((f) => ({ ...f, qty: e.target.value }));
-                  setMovementError("");
-                }}
-              />
+              <input type="number" min="1" value={movementForm.qty} onChange={(e) => { setMovementForm((f) => ({ ...f, qty: e.target.value })); setMovementError(""); }} />
             </div>
 
-            <button
-              className="btn btn-primary"
-              style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
-              disabled={savingMovement}
-              onClick={handleAddMovement}
-            >
+            <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 10 }} disabled={savingMovement} onClick={handleAddMovement}>
               {savingMovement ? "Saving..." : "💾 Save Box Movement"}
             </button>
           </div>
         </div>
       )}
 
-      {/* MODAL 2: UPDATE MOVEMENT */}
-      {showUpdateMovement && (
-        <div className="modal-overlay" onClick={() => setShowUpdateMovement(false)}>
+      {/* MODAL 2: EDIT MOVEMENT */}
+      {showEditMovement && editMovForm && (
+        <div className="modal-overlay" onClick={() => setShowEditMovement(false)}>
           <div className="modal-box" onClick={(e) => e.stopPropagation()}>
             <div className="modal-head">
-              <div className="modal-title">🔄 Update Movement</div>
-              <button className="modal-close" onClick={() => setShowUpdateMovement(false)}>✕</button>
+              <div className="modal-title">✏️ Edit Movement</div>
+              <button className="modal-close" onClick={() => setShowEditMovement(false)}>✕</button>
             </div>
 
-            {updateMovError && <div className="error-box">{updateMovError}</div>}
+            {editMovError && <div className="error-box">{editMovError}</div>}
 
             <div className="row-3">
               <div className="field">
                 <label>Box Type</label>
-                <select
-                  value={updateMovForm.boxType}
-                  onChange={(e) => {
-                    setUpdateMovForm((f) => ({ ...f, boxType: e.target.value }));
-                    setUpdateMovError("");
-                  }}
-                >
+                <select value={editMovForm.boxType} onChange={(e) => { setEditMovForm((f) => ({ ...f, boxType: e.target.value })); setEditMovError(""); }}>
                   {BOX_TYPES.map((b) => <option key={b} value={b}>{b}</option>)}
                 </select>
               </div>
 
               <div className="field">
                 <label>From Loc</label>
-                <select
-                  value={updateMovForm.fromLoc}
-                  onChange={(e) => {
-                    const newFrom = e.target.value;
-                    setUpdateMovForm((f) => ({
-                      ...f,
-                      fromLoc: newFrom,
-                      toLoc: f.toLoc === newFrom ? LOCATIONS.find((l) => l !== newFrom) : f.toLoc
-                    }));
-                    setUpdateMovError("");
-                  }}
-                >
+                <select value={editMovForm.fromLoc} onChange={(e) => { const newFrom = e.target.value; setEditMovForm((f) => ({ ...f, fromLoc: newFrom, toLoc: f.toLoc === newFrom ? LOCATIONS.find((l) => l !== newFrom) : f.toLoc })); setEditMovError(""); }}>
                   {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
                 </select>
               </div>
 
               <div className="field">
                 <label>To Loc</label>
-                <select
-                  value={updateMovForm.toLoc}
-                  onChange={(e) => {
-                    setUpdateMovForm((f) => ({ ...f, toLoc: e.target.value }));
-                    setUpdateMovError("");
-                  }}
-                >
-                  {LOCATIONS.filter((l) => l !== updateMovForm.fromLoc).map((l) => <option key={l} value={l}>{l}</option>)}
+                <select value={editMovForm.toLoc} onChange={(e) => { setEditMovForm((f) => ({ ...f, toLoc: e.target.value })); setEditMovError(""); }}>
+                  {LOCATIONS.filter((l) => l !== editMovForm.fromLoc).map((l) => <option key={l} value={l}>{l}</option>)}
                 </select>
               </div>
             </div>
@@ -1999,13 +1524,7 @@ function App() {
             <div className="row-2">
               <div className="field">
                 <label>Condition</label>
-                <select
-                  value={updateMovForm.condition}
-                  onChange={(e) => {
-                    setUpdateMovForm((f) => ({ ...f, condition: e.target.value }));
-                    setUpdateMovError("");
-                  }}
-                >
+                <select value={editMovForm.condition} onChange={(e) => { setEditMovForm((f) => ({ ...f, condition: e.target.value })); setEditMovError(""); }}>
                   <option value="Filled">Filled</option>
                   <option value="Empty">Empty</option>
                 </select>
@@ -2013,34 +1532,21 @@ function App() {
 
               <div className="field">
                 <label>Quantity (Pcs)</label>
-                <input
-                  type="number"
-                  min="1"
-                  value={updateMovForm.qty}
-                  onChange={(e) => {
-                    setUpdateMovForm((f) => ({ ...f, qty: e.target.value }));
-                    setUpdateMovError("");
-                  }}
-                />
+                <input type="number" min="1" value={editMovForm.qty} onChange={(e) => { setEditMovForm((f) => ({ ...f, qty: e.target.value })); setEditMovError(""); }} />
               </div>
             </div>
 
             <div className="info-stat-box">
               <span style={{ color: "var(--ink-soft)", fontWeight: 700 }}>
-                Available Stock ({updateMovForm.condition}) of <b>{updateMovForm.boxType}</b> at <b>{updateMovForm.fromLoc}</b>:
+                Available Stock ({editMovForm.condition}) of <b>{editMovForm.boxType}</b> at <b>{editMovForm.fromLoc}</b> (if edited):
               </span>
-              <span style={{ fontWeight: 800, color: currentUpdateMovStock > 0 ? "var(--primary)" : "var(--danger)", fontSize: "15px" }}>
-                {currentUpdateMovStock} pcs
+              <span style={{ fontWeight: 800, color: currentEditMovStock > 0 ? "var(--primary)" : "var(--danger)", fontSize: "15px" }}>
+                {currentEditMovStock} pcs
               </span>
             </div>
 
-            <button
-              className="btn btn-primary"
-              style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
-              disabled={savingUpdateMov}
-              onClick={handleUpdateMovement}
-            >
-              {savingUpdateMov ? "Saving..." : "💾 Save Movement Update"}
+            <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 10 }} disabled={savingEditMov} onClick={handleEditMovement}>
+              {savingEditMov ? "Saving..." : "💾 Update Movement"}
             </button>
           </div>
         </div>
@@ -2060,26 +1566,14 @@ function App() {
             <div className="row-2">
               <div className="field">
                 <label>Location</label>
-                <select
-                  value={conditionForm.location}
-                  onChange={(e) => {
-                    setConditionForm((f) => ({ ...f, location: e.target.value }));
-                    setConditionError("");
-                  }}
-                >
+                <select value={conditionForm.location} onChange={(e) => { setConditionForm((f) => ({ ...f, location: e.target.value })); setConditionError(""); }}>
                   {LOCATIONS.map((l) => <option key={l} value={l}>{l}</option>)}
                 </select>
               </div>
 
               <div className="field">
                 <label>Box Type</label>
-                <select
-                  value={conditionForm.boxType}
-                  onChange={(e) => {
-                    setConditionForm((f) => ({ ...f, boxType: e.target.value }));
-                    setConditionError("");
-                  }}
-                >
+                <select value={conditionForm.boxType} onChange={(e) => { setConditionForm((f) => ({ ...f, boxType: e.target.value })); setConditionError(""); }}>
                   {BOX_TYPES.map((b) => <option key={b} value={b}>{b}</option>)}
                 </select>
               </div>
@@ -2088,14 +1582,7 @@ function App() {
             <div className="row-2">
               <div className="field">
                 <label>Previous Condition</label>
-                <select
-                  value={conditionForm.prevCondition}
-                  onChange={(e) => {
-                    const next = e.target.value === "Filled" ? "Empty" : "Filled";
-                    setConditionForm((f) => ({ ...f, prevCondition: e.target.value, nextCondition: next }));
-                    setConditionError("");
-                  }}
-                >
+                <select value={conditionForm.prevCondition} onChange={(e) => { const next = e.target.value === "Filled" ? "Empty" : "Filled"; setConditionForm((f) => ({ ...f, prevCondition: e.target.value, nextCondition: next })); setConditionError(""); }}>
                   <option value="Filled">Filled</option>
                   <option value="Empty">Empty</option>
                 </select>
@@ -2103,13 +1590,7 @@ function App() {
 
               <div className="field">
                 <label>Next Condition</label>
-                <select
-                  value={conditionForm.nextCondition}
-                  onChange={(e) => {
-                    setConditionForm((f) => ({ ...f, nextCondition: e.target.value }));
-                    setConditionError("");
-                  }}
-                >
+                <select value={conditionForm.nextCondition} onChange={(e) => { setConditionForm((f) => ({ ...f, nextCondition: e.target.value })); setConditionError(""); }}>
                   <option value="Empty">Empty</option>
                   <option value="Filled">Filled</option>
                 </select>
@@ -2127,23 +1608,10 @@ function App() {
 
             <div className="field">
               <label>Quantity to Update (Pcs)</label>
-              <input
-                type="number"
-                min="1"
-                value={conditionForm.qty}
-                onChange={(e) => {
-                  setConditionForm((f) => ({ ...f, qty: e.target.value }));
-                  setConditionError("");
-                }}
-              />
+              <input type="number" min="1" value={conditionForm.qty} onChange={(e) => { setConditionForm((f) => ({ ...f, qty: e.target.value })); setConditionError(""); }} />
             </div>
 
-            <button
-              className="btn btn-primary"
-              style={{ width: "100%", justifyContent: "center", marginTop: 10 }}
-              disabled={savingCondition}
-              onClick={handleUpdateCondition}
-            >
+            <button className="btn btn-primary" style={{ width: "100%", justifyContent: "center", marginTop: 10 }} disabled={savingCondition} onClick={handleUpdateCondition}>
               {savingCondition ? "Saving..." : "💾 Save Condition Update"}
             </button>
           </div>
