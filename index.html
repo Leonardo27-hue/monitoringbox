@@ -30,7 +30,7 @@
     "<line x1='60' y1='50' x2='60' y2='76' stroke='#B9D3EC' stroke-width='2'/>" +
     "<line x1='70' y1='50' x2='70' y2='76' stroke='#B9D3EC' stroke-width='2'/>" +
     "<rect x='30' y='58' width='22' height='10' rx='2' fill='#1F2430' opacity='0.85'/>" +
-    "<rect x='16' y='32' width='68' height='18' rx='7' fill='#2F6FED'/>" +
+    "<rect x='16' y='32' width='68' height='18' rx='7' fill='#2F6FED' />" +
     "<rect x='26' y='38' width='48' height='4' rx='2' fill='#5C8CF2'/>" +
     "<rect x='9' y='36' width='10' height='10' rx='3' fill='#F5B942'/>" +
     "<rect x='81' y='36' width='10' height='10' rx='3' fill='#F5B942'/>" +
@@ -142,9 +142,9 @@ function getBoxSize(bType) {
   return "10";
 }
 
-const ADMIN_USERS = ["Leo", "Caca", "Fifin", "Astika"];
-const REPORT_USERS = ["Leo", "Fifin", "Caca", "Erna", "Arik", "Trisna"];
-const RESTRICTED_USERS = ["Erna", "Arik", "Trisna"];
+const ADMIN_USERS = ["Leo", "Caca", "Fifin"];
+const REPORT_USERS = ["Leo", "Fifin", "Caca", "Diah", "Erna", "Arik", "Trisna"];
+const RESTRICTED_USERS = ["Erna", "Arik", "Trisna", "Diah"];
 
 function uid() {
   return Date.now() + "-" + Math.random().toString(36).slice(2, 9);
@@ -222,7 +222,7 @@ function App() {
   const isReportUser = REPORT_USERS.some((u) => u.toLowerCase() === cleanUser);
   const isRestrictedUser = RESTRICTED_USERS.some((r) => r.toLowerCase() === cleanUser);
 
-  const [tab, setTab] = useState(() => (isRestrictedUser ? "movement" : "dashboard"));
+  const [tab, setTab] = useState("dashboard");
   const [masterSubOpen, setMasterSubOpen] = useState(false);
 
   const [movements, setMovements] = useState(() => LocalStore.get("box_movements", []));
@@ -277,10 +277,13 @@ function App() {
   const [searchHistory, setSearchHistory] = useState("");
 
   useEffect(() => {
-    if (isRestrictedUser && !["movement", "report"].includes(tab)) {
-      setTab("movement");
+    if (!isAdmin && ["master_balance", "master_capacity", "history"].includes(tab)) {
+      setTab("dashboard");
     }
-  }, [userName, isRestrictedUser, tab]);
+    if (!isAdmin && !isReportUser && tab === "report") {
+      setTab("dashboard");
+    }
+  }, [userName, isAdmin, isReportUser, tab]);
 
   useEffect(() => {
     if (isLocalEnv || !db) {
@@ -385,8 +388,7 @@ function App() {
     if (!name) return;
     try { localStorage.setItem("namaPenggunaBoxTracing", name); } catch (e) {}
     setUserName(name);
-    const restricted = RESTRICTED_USERS.some((r) => r.toLowerCase() === name.toLowerCase());
-    if (restricted) setTab("movement");
+    setTab("dashboard");
   }
 
   function relogin() {
@@ -876,11 +878,9 @@ function App() {
         </div>
 
         <div className="sidebar-menu">
-          {!isRestrictedUser && (
-            <button className={"sidebar-btn " + (tab === "dashboard" ? "active" : "")} onClick={() => selectTab("dashboard")}>
-              📊 Dashboard
-            </button>
-          )}
+          <button className={"sidebar-btn " + (tab === "dashboard" ? "active" : "")} onClick={() => selectTab("dashboard")}>
+            📊 Dashboard
+          </button>
 
           <button className={"sidebar-btn " + (tab === "movement" ? "active" : "")} onClick={() => selectTab("movement")}>
             🔄 Box Movement
@@ -962,7 +962,7 @@ function App() {
         )}
 
         <div className="content">
-          {tab === "dashboard" && !isRestrictedUser && (
+          {tab === "dashboard" && (
             <>
               <div className="toolbar" style={{ marginBottom: "16px" }}>
                 <div style={{ fontSize: "18px", fontWeight: "800", color: "var(--ink)" }}>
