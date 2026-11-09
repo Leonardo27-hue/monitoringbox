@@ -92,8 +92,8 @@ if (!isLocalEnv) {
 
 const DEFAULT_CAPACITIES = {
   "Sundry": { cap10: 100, cap45: 3000, cap95: 100, capacity: 3200 },
-  "Paper": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
-  "Filter": { cap10: 100, cap45: 1500, cap95: 50, capacity: 1650 },
+  "DistPaper": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
+  "DistFilter": { cap10: 100, cap45: 1500, cap95: 50, capacity: 1650 },
   "Cutting": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
   "Remove Filter": { cap10: 300, cap45: 50, cap95: 50, capacity: 400 },
   "BB1": { cap10: 0, cap45: 0, cap95: 0, capacity: 100 },
@@ -107,9 +107,9 @@ const DEFAULT_INITIAL_BALANCE = {
   "Sundry__CB-10__Empty": 136,
   "Sundry__CB-45__Empty": 533,
   "Sundry__CB-95__Empty": 11,
-  "Filter__CB-10__Filled": 59,
-  "Filter__CB-45__Filled": 1183,
-  "Filter__CB-95__Filled": 20,
+  "DistFilter__CB-10__Filled": 59,
+  "DistFilter__CB-45__Filled": 1183,
+  "DistFilter__CB-95__Filled": 20,
   "Remove Filter__CB-10__Filled": 5,
   "Remove Filter__CB-45__Filled": 269,
   "Remove Filter__CB-45__Empty": 10,
@@ -132,8 +132,31 @@ const LocalStore = {
   }
 };
 
-const LOCATIONS = ["Sundry", "Paper", "Filter", "Cutting", "Remove Filter", "BB1", "BB2", "BB3", "GP3", "Jembrana"];
-const BOX_TYPES = ["CB-10", "CB-45", "CB-95", "JM-10", "JM-45", "JM-95"];
+const LOCATIONS = ["Sundry", "DistPaper", "DistFilter", "Cutting", "Remove Filter", "BB1", "BB2", "BB3", "GP3", "Jembrana"];
+const BOX_TYPES = ["CB-10", "CB-45", "CB-95"];
+
+function normalizeBoxType(bType) {
+  if (!bType) return "CB-10";
+  return bType.replace("JM-", "CB-");
+}
+
+function normalizeMovement(m) {
+  if (!m) return m;
+  const boxType = normalizeBoxType(m.boxType);
+  let details = m.details;
+  if (details) details = details.replace(/JM-/g, "CB-");
+  return { ...m, boxType, ...(details ? { details } : {}) };
+}
+
+function normalizeInitialBalance(raw) {
+  if (!raw) return {};
+  const result = {};
+  Object.keys(raw).forEach((k) => {
+    const normK = k.replace("__JM-", "__CB-");
+    result[normK] = (result[normK] || 0) + (Number(raw[k]) || 0);
+  });
+  return result;
+}
 
 function getBoxSize(bType) {
   if (!bType) return "10";
@@ -225,16 +248,23 @@ function App() {
   const [tab, setTab] = useState("dashboard");
   const [masterSubOpen, setMasterSubOpen] = useState(false);
 
-  const [movements, setMovements] = useState(() => LocalStore.get("box_movements", []));
+  const [movements, setMovements] = useState(() => {
+    const list = LocalStore.get("box_movements", []);
+    return (list || []).map(normalizeMovement);
+  });
   const [initialBalance, setInitialBalance] = useState(() => {
     const cached = LocalStore.get("initial_balance", null);
-    return (cached && Object.keys(cached).length > 0) ? cached : DEFAULT_INITIAL_BALANCE;
+    const source = (cached && Object.keys(cached).length > 0) ? cached : DEFAULT_INITIAL_BALANCE;
+    return normalizeInitialBalance(source);
   });
   const [areaCapacity, setAreaCapacity] = useState(() => {
     const cached = LocalStore.get("area_capacity", null);
     return (cached && Object.keys(cached).length > 0) ? cached : DEFAULT_CAPACITIES;
   });
-  const [history, setHistory] = useState(() => LocalStore.get("movement_history", []));
+  const [history, setHistory] = useState(() => {
+    const list = LocalStore.get("movement_history", []);
+    return (list || []).map(normalizeMovement);
+  });
 
   const [cloudStatus, setCloudStatus] = useState(isLocalEnv ? "local" : "connecting");
 
@@ -256,7 +286,7 @@ function App() {
 
   // MODAL STATES
   const [showAddMovement, setShowAddMovement] = useState(false);
-  const [movementForm, setMovementForm] = useState({ fromLoc: "Sundry", toLoc: "Paper", boxType: "CB-10", condition: "Filled", qty: 1 });
+  const [movementForm, setMovementForm] = useState({ fromLoc: "Sundry", toLoc: "DistPaper", boxType: "CB-10", condition: "Filled", qty: 1 });
   const [movementError, setMovementError] = useState("");
   const [savingMovement, setSavingMovement] = useState(false);
 
@@ -300,11 +330,20 @@ function App() {
       unsub1 = db.collection("box_movements").orderBy("timestamp", "desc").onSnapshot(
         (snap) => {
           setCloudStatus("connected");
-          if (!snap.empty) {
-            const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-            setMovements(list);
-            LocalStore.set("box_movements", list);
-          }
+          const list = snap.docs.map((d) => {
+            const data = d.data();
+            if (data.boxType && data.boxType.includes("JM-")) {
+              try {
+                d.ref.update({
+                  boxType: normalizeBoxType(data.boxType),
+                  details: data.details ? data.details.replace(/JM-/g, "CB-") : data.details
+                });
+              } catch (e) {}
+            }
+            return normalizeMovement({ id: d.id, ...data });
+          });
+          setMovements(list);
+          LocalStore.set("box_movements", list);
         },
         (err) => { setCloudStatus("error"); }
       );
@@ -312,19 +351,26 @@ function App() {
       unsub2 = db.collection("initial_balance").onSnapshot(
         (snap) => {
           setCloudStatus("connected");
-          if (!snap.empty) {
-            const dataMap = {};
-            snap.docs.forEach((d) => {
-              const item = d.data();
-              dataMap[`${item.location}__${item.boxType}__Filled`] = Number(item.filled) || 0;
-              dataMap[`${item.location}__${item.boxType}__Empty`] = Number(item.empty) || 0;
-            });
-            setInitialBalance((prev) => {
-              const merged = { ...prev, ...dataMap };
-              LocalStore.set("initial_balance", merged);
-              return merged;
-            });
-          }
+          const dataMap = {};
+          snap.docs.forEach((d) => {
+            const item = d.data();
+            const bType = normalizeBoxType(item.boxType);
+            const loc = item.location;
+            const filledKey = `${loc}__${bType}__Filled`;
+            const emptyKey = `${loc}__${bType}__Empty`;
+            dataMap[filledKey] = (dataMap[filledKey] || 0) + (Number(item.filled) || 0);
+            dataMap[emptyKey] = (dataMap[emptyKey] || 0) + (Number(item.empty) || 0);
+
+            if (item.boxType && item.boxType.includes("JM-")) {
+              try { d.ref.delete(); } catch (e) {}
+            }
+          });
+          setInitialBalance((prev) => {
+            const normalizedPrev = normalizeInitialBalance(prev);
+            const merged = { ...normalizedPrev, ...dataMap };
+            LocalStore.set("initial_balance", merged);
+            return merged;
+          });
         },
         (err) => { setCloudStatus("error"); }
       );
@@ -355,11 +401,9 @@ function App() {
       if (isAdmin || isReportUser) {
         unsub4 = db.collection("movement_history").orderBy("timestamp", "desc").limit(500).onSnapshot(
           (snap) => {
-            if (!snap.empty) {
-              const list = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-              setHistory(list);
-              LocalStore.set("movement_history", list);
-            }
+            const list = snap.docs.map((d) => normalizeMovement({ id: d.id, ...d.data() }));
+            setHistory(list);
+            LocalStore.set("movement_history", list);
           }
         );
       }
@@ -399,16 +443,18 @@ function App() {
   }
 
   function getStock(loc, bType, cond) {
-    let qty = initialBalance[`${loc}__${bType}__${cond}`] || 0;
+    const normBType = normalizeBoxType(bType);
+    let qty = initialBalance[`${loc}__${normBType}__${cond}`] || 0;
     movements.forEach((m) => {
       const mQty = Number(m.qty) || 0;
+      const mBox = normalizeBoxType(m.boxType);
       if (m.actionType === "condition_update") {
-        if (m.location === loc && m.boxType === bType) {
+        if (m.location === loc && mBox === normBType) {
           if (m.prevCondition === cond) qty -= mQty;
           if (m.nextCondition === cond) qty += mQty;
         }
       } else {
-        if (m.boxType === bType) {
+        if (mBox === normBType) {
           if (m.toLoc === loc && m.condition === cond) qty += mQty;
           if (m.fromLoc === loc && m.condition === cond) qty -= mQty;
         }
@@ -418,17 +464,19 @@ function App() {
   }
 
   function getStockForEdit(loc, bType, cond, excludeMovId) {
-    let qty = initialBalance[`${loc}__${bType}__${cond}`] || 0;
+    const normBType = normalizeBoxType(bType);
+    let qty = initialBalance[`${loc}__${normBType}__${cond}`] || 0;
     movements.forEach((m) => {
       if (m.id === excludeMovId) return;
       const mQty = Number(m.qty) || 0;
+      const mBox = normalizeBoxType(m.boxType);
       if (m.actionType === "condition_update") {
-        if (m.location === loc && m.boxType === bType) {
+        if (m.location === loc && mBox === normBType) {
           if (m.prevCondition === cond) qty -= mQty;
           if (m.nextCondition === cond) qty += mQty;
         }
       } else {
-        if (m.boxType === bType) {
+        if (mBox === normBType) {
           if (m.toLoc === loc && m.condition === cond) qty += mQty;
           if (m.fromLoc === loc && m.condition === cond) qty -= mQty;
         }
@@ -517,22 +565,22 @@ function App() {
       const getRouteQty = (from, to) => routeMap[`${from.toLowerCase()}||${to.toLowerCase()}`] || 0;
 
       const groupSundry = [
-        { label: "Sundry to Paper", from: "Sundry", to: "Paper", qty: getRouteQty("Sundry", "Paper") },
-        { label: "Sundry to Filter", from: "Sundry", to: "Filter", qty: getRouteQty("Sundry", "Filter") },
+        { label: "Sundry to DistPaper", from: "Sundry", to: "DistPaper", qty: getRouteQty("Sundry", "DistPaper") },
+        { label: "Sundry to DistFilter", from: "Sundry", to: "DistFilter", qty: getRouteQty("Sundry", "DistFilter") },
         { label: "Sundry to Cutting", from: "Sundry", to: "Cutting", qty: getRouteQty("Sundry", "Cutting") },
         { label: "Sundry to Remove Filter", from: "Sundry", to: "Remove Filter", qty: getRouteQty("Sundry", "Remove Filter") },
       ];
       const groupPaper = [
-        { label: "Paper to BB1", from: "Paper", to: "BB1", qty: getRouteQty("Paper", "BB1") },
-        { label: "Paper to BB2", from: "Paper", to: "BB2", qty: getRouteQty("Paper", "BB2") },
-        { label: "Paper to BB3", from: "Paper", to: "BB3", qty: getRouteQty("Paper", "BB3") },
-        { label: "Paper to GP3", from: "Paper", to: "GP3", qty: getRouteQty("Paper", "GP3") },
+        { label: "DistPaper to BB1", from: "DistPaper", to: "BB1", qty: getRouteQty("DistPaper", "BB1") },
+        { label: "DistPaper to BB2", from: "DistPaper", to: "BB2", qty: getRouteQty("DistPaper", "BB2") },
+        { label: "DistPaper to BB3", from: "DistPaper", to: "BB3", qty: getRouteQty("DistPaper", "BB3") },
+        { label: "DistPaper to GP3", from: "DistPaper", to: "GP3", qty: getRouteQty("DistPaper", "GP3") },
       ];
       const groupFilter = [
-        { label: "Filter to BB1", from: "Filter", to: "BB1", qty: getRouteQty("Filter", "BB1") },
-        { label: "Filter to BB2", from: "Filter", to: "BB2", qty: getRouteQty("Filter", "BB2") },
-        { label: "Filter to BB3", from: "Filter", to: "BB3", qty: getRouteQty("Filter", "BB3") },
-        { label: "Filter to GP3", from: "Filter", to: "GP3", qty: getRouteQty("Filter", "GP3") },
+        { label: "DistFilter to BB1", from: "DistFilter", to: "BB1", qty: getRouteQty("DistFilter", "BB1") },
+        { label: "DistFilter to BB2", from: "DistFilter", to: "BB2", qty: getRouteQty("DistFilter", "BB2") },
+        { label: "DistFilter to BB3", from: "DistFilter", to: "BB3", qty: getRouteQty("DistFilter", "BB3") },
+        { label: "DistFilter to GP3", from: "DistFilter", to: "GP3", qty: getRouteQty("DistFilter", "GP3") },
       ];
       const groupReturn = [
         { label: "BB1 to Sundry", from: "BB1", to: "Sundry", qty: getRouteQty("BB1", "Sundry") },
@@ -555,18 +603,19 @@ function App() {
   async function handleAddMovement() {
     setMovementError("");
     const { fromLoc, toLoc, boxType, condition, qty } = movementForm;
+    const normBoxType = normalizeBoxType(boxType);
     const numQty = Number(qty);
-    if (!fromLoc || !toLoc || !boxType || !condition) return setMovementError("All fields are required.");
+    if (!fromLoc || !toLoc || !normBoxType || !condition) return setMovementError("All fields are required.");
     if (fromLoc.trim().toLowerCase() === toLoc.trim().toLowerCase()) return setMovementError("From and To Location cannot be the same.");
     if (isNaN(numQty) || numQty <= 0) return setMovementError("Quantity must be greater than 0.");
     
-    const availableStock = getStock(fromLoc, boxType, condition);
+    const availableStock = getStock(fromLoc, normBoxType, condition);
     if (numQty > availableStock) return setMovementError(`Stock not enough! Available stock is only ${availableStock} pcs.`);
 
     setSavingMovement(true);
     const timestamp = new Date().toISOString();
-    const newMov = { id: uid(), actionType: "movement", fromLoc, toLoc, boxType, condition, qty: numQty, createdBy: userName, timestamp };
-    const newHist = { id: uid(), action: "Movement", details: `Moved ${numQty} pcs of ${boxType} (${condition}) from ${fromLoc} to ${toLoc}`, fromLoc, toLoc, boxType, qty: numQty, createdBy: userName, timestamp };
+    const newMov = { id: uid(), actionType: "movement", fromLoc, toLoc, boxType: normBoxType, condition, qty: numQty, createdBy: userName, timestamp };
+    const newHist = { id: uid(), action: "Movement", details: `Moved ${numQty} pcs of ${normBoxType} (${condition}) from ${fromLoc} to ${toLoc}`, fromLoc, toLoc, boxType: normBoxType, qty: numQty, createdBy: userName, timestamp };
 
     const nextM = [newMov, ...movements];
     setMovements(nextM); LocalStore.set("box_movements", nextM);
@@ -582,7 +631,7 @@ function App() {
       } catch (err) {}
     }
     setShowAddMovement(false);
-    setMovementForm({ fromLoc: "Sundry", toLoc: "Paper", boxType: "CB-10", condition: "Filled", qty: 1 });
+    setMovementForm({ fromLoc: "Sundry", toLoc: "DistPaper", boxType: "CB-10", condition: "Filled", qty: 1 });
     setToast({ type: "success", msg: `Successfully logged movement of ${numQty} box(es).` });
     setSavingMovement(false);
   }
@@ -593,7 +642,7 @@ function App() {
         return;
     }
     setEditMovError("");
-    setEditMovForm({ ...mov });
+    setEditMovForm({ ...mov, boxType: normalizeBoxType(mov.boxType) });
     setShowEditMovement(true);
   }
 
@@ -602,21 +651,22 @@ function App() {
     if (!editMovForm) return;
 
     const { id, fromLoc, toLoc, boxType, condition, qty } = editMovForm;
+    const normBoxType = normalizeBoxType(boxType);
     const numQty = Number(qty);
 
-    if (!fromLoc || !toLoc || !boxType || !condition) return setEditMovError("All fields are required.");
+    if (!fromLoc || !toLoc || !normBoxType || !condition) return setEditMovError("All fields are required.");
     if (fromLoc.trim().toLowerCase() === toLoc.trim().toLowerCase()) return setEditMovError("From and To Location cannot be the same.");
     if (isNaN(numQty) || numQty <= 0) return setEditMovError("Quantity must be greater than 0.");
 
-    const availableStock = getStockForEdit(fromLoc, boxType, condition, id);
+    const availableStock = getStockForEdit(fromLoc, normBoxType, condition, id);
     if (numQty > availableStock) return setEditMovError(`Stock not enough! Available stock (excluding this edit) is only ${availableStock} pcs.`);
 
     setSavingEditMov(true);
-    const updatedMov = { ...editMovForm, qty: numQty, updatedBy: userName, updatedAt: new Date().toISOString() };
+    const updatedMov = { ...editMovForm, boxType: normBoxType, qty: numQty, updatedBy: userName, updatedAt: new Date().toISOString() };
     const newHist = {
       id: uid(), action: "Edit Movement",
-      details: `Edited record to: ${numQty} pcs of ${boxType} (${condition}) from ${fromLoc} to ${toLoc}`,
-      fromLoc, toLoc, boxType, qty: numQty, createdBy: userName, timestamp: new Date().toISOString()
+      details: `Edited record to: ${numQty} pcs of ${normBoxType} (${condition}) from ${fromLoc} to ${toLoc}`,
+      fromLoc, toLoc, boxType: normBoxType, qty: numQty, createdBy: userName, timestamp: new Date().toISOString()
     };
 
     const nextM = movements.map(m => m.id === id ? updatedMov : m);
@@ -640,18 +690,19 @@ function App() {
   async function handleUpdateCondition() {
     setConditionError("");
     const { location, boxType, prevCondition, nextCondition, qty } = conditionForm;
+    const normBoxType = normalizeBoxType(boxType);
     const numQty = Number(qty);
-    if (!location || !boxType || !prevCondition || !nextCondition) return setConditionError("All fields are required.");
+    if (!location || !normBoxType || !prevCondition || !nextCondition) return setConditionError("All fields are required.");
     if (prevCondition === nextCondition) return setConditionError("Previous and Next condition cannot be the same.");
     if (isNaN(numQty) || numQty <= 0) return setConditionError("Quantity must be greater than 0.");
 
-    const availableStock = getStock(location, boxType, prevCondition);
+    const availableStock = getStock(location, normBoxType, prevCondition);
     if (numQty > availableStock) return setConditionError(`Stock not enough! Available stock is only ${availableStock} pcs.`);
 
     setSavingCondition(true);
     const timestamp = new Date().toISOString();
-    const newMov = { id: uid(), actionType: "condition_update", location, fromLoc: location, toLoc: location, boxType, prevCondition, nextCondition, condition: `${prevCondition} → ${nextCondition}`, qty: numQty, createdBy: userName, timestamp };
-    const newHist = { id: uid(), action: "Condition Update", details: `Updated condition at ${location}: ${numQty} pcs of ${boxType} changed from ${prevCondition} to ${nextCondition}`, location, boxType, qty: numQty, createdBy: userName, timestamp };
+    const newMov = { id: uid(), actionType: "condition_update", location, fromLoc: location, toLoc: location, boxType: normBoxType, prevCondition, nextCondition, condition: `${prevCondition} → ${nextCondition}`, qty: numQty, createdBy: userName, timestamp };
+    const newHist = { id: uid(), action: "Condition Update", details: `Updated condition at ${location}: ${numQty} pcs of ${normBoxType} changed from ${prevCondition} to ${nextCondition}`, location, boxType: normBoxType, qty: numQty, createdBy: userName, timestamp };
 
     const nextM = [newMov, ...movements];
     setMovements(nextM); LocalStore.set("box_movements", nextM);
@@ -667,34 +718,46 @@ function App() {
       } catch (err) {}
     }
     setShowUpdateCondition(false);
-    setToast({ type: "success", msg: `Condition updated for ${numQty} pcs of ${boxType} at ${location}.` });
+    setToast({ type: "success", msg: `Condition updated for ${numQty} pcs of ${normBoxType} at ${location}.` });
     setSavingCondition(false);
   }
 
   async function saveInitialBalanceRow(location, bType) {
-    const filledVal = Number(masterBalanceInputs[`${location}__${bType}__Filled`] ?? (initialBalance[`${location}__${bType}__Filled`] || 0));
-    const emptyVal = Number(masterBalanceInputs[`${location}__${bType}__Empty`] ?? (initialBalance[`${location}__${bType}__Empty`] || 0));
-    const next = { ...initialBalance, [`${location}__${bType}__Filled`]: filledVal, [`${location}__${bType}__Empty`]: emptyVal };
+    const normBType = normalizeBoxType(bType);
+    const filledVal = Number(masterBalanceInputs[`${location}__${normBType}__Filled`] ?? (initialBalance[`${location}__${normBType}__Filled`] || 0));
+    const emptyVal = Number(masterBalanceInputs[`${location}__${normBType}__Empty`] ?? (initialBalance[`${location}__${normBType}__Empty`] || 0));
+    const next = { ...initialBalance, [`${location}__${normBType}__Filled`]: filledVal, [`${location}__${normBType}__Empty`]: emptyVal };
     setInitialBalance(next); LocalStore.set("initial_balance", next);
     if (!isLocalEnv && db) {
-      try { await db.collection("initial_balance").doc(`${location}__${bType}`).set({ location, boxType: bType, filled: filledVal, empty: emptyVal, updatedBy: userName, updatedAt: new Date().toISOString() }, { merge: true }); } catch (err) {}
+      try {
+        const batch = db.batch();
+        batch.set(db.collection("initial_balance").doc(`${location}__${normBType}`), { location, boxType: normBType, filled: filledVal, empty: emptyVal, updatedBy: userName, updatedAt: new Date().toISOString() }, { merge: true });
+        const oldJm = normBType.replace("CB-", "JM-");
+        batch.delete(db.collection("initial_balance").doc(`${location}__${oldJm}`));
+        await batch.commit();
+      } catch (err) {}
     }
-    setToast({ type: "success", msg: `Saved initial balance for ${bType} at ${location}.` });
+    setToast({ type: "success", msg: `Saved initial balance for ${normBType} at ${location}.` });
   }
 
   async function saveAllInitialBalanceForLocation(location) {
     setSavingMasterBalance(true);
     const next = { ...initialBalance };
     BOX_TYPES.forEach((bType) => {
-      next[`${location}__${bType}__Filled`] = Number(masterBalanceInputs[`${location}__${bType}__Filled`] ?? (initialBalance[`${location}__${bType}__Filled`] || 0));
-      next[`${location}__${bType}__Empty`] = Number(masterBalanceInputs[`${location}__${bType}__Empty`] ?? (initialBalance[`${location}__${bType}__Empty`] || 0));
+      const normBType = normalizeBoxType(bType);
+      next[`${location}__${normBType}__Filled`] = Number(masterBalanceInputs[`${location}__${normBType}__Filled`] ?? (initialBalance[`${location}__${normBType}__Filled`] || 0));
+      next[`${location}__${normBType}__Empty`] = Number(masterBalanceInputs[`${location}__${normBType}__Empty`] ?? (initialBalance[`${location}__${normBType}__Empty`] || 0));
     });
     setInitialBalance(next); LocalStore.set("initial_balance", next);
     if (!isLocalEnv && db) {
       try {
         const batch = db.batch(); const now = new Date().toISOString();
         BOX_TYPES.forEach((bType) => {
-          batch.set(db.collection("initial_balance").doc(`${location}__${bType}`), { location, boxType: bType, filled: next[`${location}__${bType}__Filled`], empty: next[`${location}__${bType}__Empty`], updatedBy: userName, updatedAt: now }, { merge: true });
+          const normBType = normalizeBoxType(bType);
+          batch.set(db.collection("initial_balance").doc(`${location}__${normBType}`), { location, boxType: normBType, filled: next[`${location}__${normBType}__Filled`], empty: next[`${location}__${normBType}__Empty`], updatedBy: userName, updatedAt: now }, { merge: true });
+        });
+        ["JM-10", "JM-45", "JM-95"].forEach((oldJm) => {
+          batch.delete(db.collection("initial_balance").doc(`${location}__${oldJm}`));
         });
         await batch.commit();
       } catch (err) {}
@@ -1173,7 +1236,7 @@ function App() {
 
                 <div className="report-card-group">
                   <div className="report-card-head">
-                    <div className="report-card-title">📜 Paper to BB / GP3</div>
+                    <div className="report-card-title">📜 DistPaper to BB / GP3</div>
                     <span className="report-card-total-badge">{reportSummary.totalPaper} box</span>
                   </div>
                   <div className="report-row-list">
@@ -1185,7 +1248,7 @@ function App() {
 
                 <div className="report-card-group">
                   <div className="report-card-head">
-                    <div className="report-card-title">⚙️ Filter to BB / GP3</div>
+                    <div className="report-card-title">⚙️ DistFilter to BB / GP3</div>
                     <span className="report-card-total-badge">{reportSummary.totalFilter} box</span>
                   </div>
                   <div className="report-row-list">
@@ -1256,16 +1319,17 @@ function App() {
                     </thead>
                     <tbody>
                       {BOX_TYPES.map((bType) => {
-                        const filledKey = `${selectedMasterLoc}__${bType}__Filled`;
-                        const emptyKey = `${selectedMasterLoc}__${bType}__Empty`;
-                        const currFilled = getStock(selectedMasterLoc, bType, "Filled");
-                        const currEmpty = getStock(selectedMasterLoc, bType, "Empty");
+                        const normBType = normalizeBoxType(bType);
+                        const filledKey = `${selectedMasterLoc}__${normBType}__Filled`;
+                        const emptyKey = `${selectedMasterLoc}__${normBType}__Empty`;
+                        const currFilled = getStock(selectedMasterLoc, normBType, "Filled");
+                        const currEmpty = getStock(selectedMasterLoc, normBType, "Empty");
                         const inputFilled = masterBalanceInputs[filledKey] ?? (initialBalance[filledKey] || 0);
                         const inputEmpty = masterBalanceInputs[emptyKey] ?? (initialBalance[emptyKey] || 0);
 
                         return (
-                          <tr key={bType}>
-                            <td style={{ fontWeight: 800 }}>{bType}</td>
+                          <tr key={normBType}>
+                            <td style={{ fontWeight: 800 }}>{normBType}</td>
                             <td style={{ width: "160px" }}>
                               <input type="number" min="0" className="inline-select" style={{ width: "120px", fontSize: "14px", padding: "8px 12px", fontWeight: "700" }} value={inputFilled} onChange={(e) => setMasterBalanceInputs((prev) => ({ ...prev, [filledKey]: e.target.value }))} />
                             </td>
@@ -1278,7 +1342,7 @@ function App() {
                               <span style={{ fontWeight: 800, color: "var(--kosong)" }}>{currEmpty} Empty</span>
                             </td>
                             <td>
-                              <button className="btn btn-outline" style={{ padding: "7px 14px", fontSize: "12px", fontWeight: "700" }} onClick={() => saveInitialBalanceRow(selectedMasterLoc, bType)}>
+                              <button className="btn btn-outline" style={{ padding: "7px 14px", fontSize: "12px", fontWeight: "700" }} onClick={() => saveInitialBalanceRow(selectedMasterLoc, normBType)}>
                                 💾 Save
                               </button>
                             </td>
